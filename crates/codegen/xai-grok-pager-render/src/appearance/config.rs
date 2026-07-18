@@ -587,6 +587,10 @@ pub struct ToolConfig {
     pub dim_details: bool,
     /// Bullet/icon character rendered before tool call headers.
     pub bullet: ToolBullet,
+    /// Number of output lines to preview when the block is collapsed
+    /// (0 = header-only, the legacy behavior). Applies to Read, Search,
+    /// ListDir, UseTool, WebFetch, WebSearch, etc. Default 3.
+    pub collapsed_preview_lines: u16,
     // Note: bullet_accent and bullet_color were removed in the scrollback-v2 refactor.
     // Bullet color is now determined by BlockContent::bullet() — each block type
     // decides its own bullet color based on state (accent color, error, default).
@@ -600,6 +604,7 @@ impl Default for ToolConfig {
             muted_collapsed: true,
             dim_details: true,
             bullet: ToolBullet::Diamond,
+            collapsed_preview_lines: 3,
         }
     }
 }
@@ -690,6 +695,10 @@ pub struct ExecuteConfig {
     pub header_style: ExecuteHeaderStyle,
     /// When true, command text is muted/uncolored when collapsed.
     pub muted_command_collapsed: bool,
+    /// Number of output lines to preview when the block is collapsed (0 = no
+    /// preview, restoring the old one-line header-only behavior). When the
+    /// output exceeds this count, a "… N more lines" hint is appended.
+    pub collapsed_preview_lines: u16,
 }
 
 impl Default for ExecuteConfig {
@@ -701,6 +710,7 @@ impl Default for ExecuteConfig {
             running_accent: crate::theme::Theme::current().accent_running,
             header_style: ExecuteHeaderStyle::Label,
             muted_command_collapsed: true,
+            collapsed_preview_lines: 3,
         }
     }
 }
@@ -1259,6 +1269,9 @@ pub struct RawToolConfig {
     /// "none", "dot" (·), "small-circle" (•), "circle" (●),
     /// "small-triangle" (▸), "triangle" (▶), "diamond" (◆).
     pub bullet: RawToolBullet,
+    /// Number of output lines to preview when the block is collapsed.
+    /// 0 disables the preview (header-only, the legacy behavior). Default 3.
+    pub collapsed_preview_lines: u16,
     // Note: bullet_accent and bullet_color removed — see ToolConfig comment.
 }
 
@@ -1268,6 +1281,7 @@ impl Default for RawToolConfig {
             muted_collapsed: true,
             dim_details: true,
             bullet: RawToolBullet::Diamond,
+            collapsed_preview_lines: 3,
         }
     }
 }
@@ -1310,6 +1324,9 @@ pub struct RawExecuteConfig {
     /// When true, command text is muted/uncolored when collapsed.
     /// When false, command text keeps its color when collapsed.
     pub muted_command_collapsed: bool,
+    /// Number of output lines to preview when the block is collapsed.
+    /// 0 disables the preview (header-only, the legacy behavior). Default 3.
+    pub collapsed_preview_lines: u16,
 }
 
 impl Default for RawExecuteConfig {
@@ -1321,6 +1338,7 @@ impl Default for RawExecuteConfig {
             running_accent: OptionalColor::None,
             header_style: RawExecuteHeaderStyle::Label,
             muted_command_collapsed: true,
+            collapsed_preview_lines: 3,
         }
     }
 }
@@ -1530,6 +1548,7 @@ impl From<RawToolConfig> for ToolConfig {
             muted_collapsed: raw.muted_collapsed,
             dim_details: raw.dim_details,
             bullet: raw.bullet.into(),
+            collapsed_preview_lines: raw.collapsed_preview_lines,
         }
     }
 }
@@ -1554,6 +1573,7 @@ impl From<RawExecuteConfig> for ExecuteConfig {
             running_accent: accent,
             header_style: raw.header_style.into(),
             muted_command_collapsed: raw.muted_command_collapsed,
+            collapsed_preview_lines: raw.collapsed_preview_lines,
         }
     }
 }

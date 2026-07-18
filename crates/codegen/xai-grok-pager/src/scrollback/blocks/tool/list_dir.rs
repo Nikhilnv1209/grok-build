@@ -9,7 +9,7 @@ use crate::scrollback::types::{
 };
 use crate::theme::Theme;
 
-use super::TOOL_HEADER_RANGE;
+use super::{PreviewStyle, TOOL_HEADER_RANGE, append_collapsed_body};
 
 /// List directory tool call.
 #[derive(Debug, Clone)]
@@ -146,13 +146,35 @@ impl BlockContent for ListDirToolCallBlock {
         let terminal_bg = ctx.appearance.scrollback.blocks.list_dir.terminal_bg;
 
         match ctx.mode {
-            DisplayMode::Collapsed => BlockOutput {
-                lines: vec![self.header_block_line(self.collapsed_line(
+            DisplayMode::Collapsed => {
+                let mut lines: Vec<BlockLine> = vec![self.header_block_line(self.collapsed_line(
                     &theme,
                     muted_collapsed,
                     Some(ctx.content_width()),
-                ))],
-            },
+                ))];
+                if !ctx.is_running {
+                    let max = ctx
+                        .appearance
+                        .scrollback
+                        .blocks
+                        .tool
+                        .collapsed_preview_lines as usize;
+                    let output = if self.output.is_empty() {
+                        None
+                    } else {
+                        Some(self.output.as_str())
+                    };
+                    append_collapsed_body(
+                        &mut lines,
+                        &theme,
+                        self.error.as_deref(),
+                        output,
+                        max,
+                        PreviewStyle::Terminal,
+                    );
+                }
+                BlockOutput { lines }
+            }
             DisplayMode::Truncated | DisplayMode::Expanded => {
                 let mut lines: Vec<BlockLine> =
                     vec![self.header_block_line(self.collapsed_line(&theme, false, None))];
@@ -181,7 +203,14 @@ impl BlockContent for ListDirToolCallBlock {
     }
 
     fn accent(&self, _ctx: &BlockContext) -> Option<AccentStyle> {
-        None // ListDir blocks never have an accent line
+        // Failed list_dir keeps a red accent bar so the failure is obvious
+        // without expanding.
+        if self.error.is_some() {
+            let theme = Theme::current();
+            Some(AccentStyle::static_color(theme.accent_error))
+        } else {
+            None
+        }
     }
 
     fn bullet(&self, _ctx: &BlockContext) -> Option<AccentStyle> {

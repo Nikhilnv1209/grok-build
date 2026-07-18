@@ -232,6 +232,41 @@ impl TextDrag {
 }
 
 impl BlockViewerPane {
+    /// Construct the appropriate viewer for a scrollback entry's block type.
+    ///
+    /// Dispatches to the per-type constructor (`for_execute`, `for_use_tool`,
+    /// …) based on the entry's block. Returns `None` for block types without a
+    /// dedicated fullscreen viewer (e.g. Lifecycle, Skill, Other) — callers
+    /// should fall back to their default behavior in that case.
+    ///
+    /// This is the single source of truth for "which viewer does this block
+    /// get" — used by both the Enter key (`dispatch_open_block_viewer`) and
+    /// double-click on a tool block.
+    pub fn for_entry(entry: &ScrollbackEntry) -> Option<Self> {
+        let entry_id = entry.id;
+        match &entry.block {
+            RenderBlock::Thinking(_) | RenderBlock::AgentMessage(_) => {
+                Self::for_markdown(entry_id, entry)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::Execute(_)) => Self::for_execute(entry_id, entry),
+            RenderBlock::ToolCall(ToolCallBlock::Edit(_)) => Self::for_edit(entry_id, entry),
+            RenderBlock::ToolCall(ToolCallBlock::Read(_)) => Self::for_read(entry_id, entry),
+            RenderBlock::ToolCall(ToolCallBlock::Search(_)) => Self::for_grep(entry_id, entry),
+            RenderBlock::ToolCall(ToolCallBlock::ListDir(_)) => Self::for_list_dir(entry_id, entry),
+            RenderBlock::ToolCall(ToolCallBlock::WebFetch(_)) => {
+                Self::for_web_fetch(entry_id, entry)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::WebSearch(_)) => {
+                Self::for_web_search(entry_id, entry)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(_)) => {
+                Self::for_integration_search(entry_id, entry)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::UseTool(_)) => Self::for_use_tool(entry_id, entry),
+            _ => None,
+        }
+    }
+
     /// Create a viewer for a markdown block (thinking or agent message).
     pub fn for_markdown(entry_id: EntryId, entry: &ScrollbackEntry) -> Option<Self> {
         let lines = Self::extract_markdown_lines(&entry.block)?;

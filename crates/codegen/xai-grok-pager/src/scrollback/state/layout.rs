@@ -1393,10 +1393,13 @@ impl ScrollbackState {
 
         let show_thinking = crate::appearance::cache::load_show_thinking_blocks();
 
-        for (i, cached) in cached_entries.iter_mut().enumerate() {
+        // Compute gaps in a first pass using already-measured heights so we
+        // can read both neighbors without fighting the mutable borrow.
+        let mut gaps = vec![1u16; n];
+        for i in 0..n {
             let (_, a) = entries.get_index(i).unwrap();
             if a.is_hidden_thinking(show_thinking) {
-                cached.gap_after = 0;
+                gaps[i] = 0;
                 continue;
             }
 
@@ -1412,7 +1415,7 @@ impl ScrollbackState {
 
             if j >= n {
                 // Only trailing hidden thinking after `a` (or `a` is last).
-                cached.gap_after = 1;
+                gaps[i] = 1;
                 continue;
             }
 
@@ -1420,11 +1423,31 @@ impl ScrollbackState {
             let both_groupable = a.block.is_groupable() && b.block.is_groupable();
             let both_collapsed = a.display_mode == DisplayMode::Collapsed
                 && b.display_mode == DisplayMode::Collapsed;
-            cached.gap_after = if both_groupable && both_collapsed {
+            // Always leave a 1-row gap between collapsed tool calls.
+            //
+            // Dense packing (gap=0) made sense when collapsed tools were a
+            // single header line; with output/error previews the blocks are
+            // multi-line panels and packing them with no separator makes
+            // parallel tool calls blend into one continuous band. Verb-group
+            // / N-more folding still provides density for long runs.
+            //
+            // Keep gap=0 only for pure header-only stubs that still report
+            // height 1 (no vpad, no preview) — preserves the original dense
+            // look for that edge case.
+            let both_header_only = cached_entries[i].height <= 1 && cached_entries[j].height <= 1;
+            gaps[i] = if both_groupable && both_collapsed && both_header_only {
                 0
+            } else if both_groupable && both_collapsed {
+                // Multi-line collapsed tools (preview body / vpad / error):
+                // always separate so parallel calls stay visually distinct.
+                1
             } else {
                 1
             };
+        }
+
+        for (cached, gap) in cached_entries.iter_mut().zip(gaps) {
+            cached.gap_after = gap;
         }
     }
 

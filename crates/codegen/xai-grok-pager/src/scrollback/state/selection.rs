@@ -790,7 +790,9 @@ mod tests {
 
     #[test]
     fn test_gap_all_collapsed_groupable_dense() {
-        // 3 collapsed groupable blocks → 0 gaps between them, 1 trailing
+        // Collapsed stubs have height > 1 (vpad), so they get a 1-row gap
+        // between neighbors (parallel tools stay visually separated). Trailing
+        // entry still has gap=1.
         let mut state = ScrollbackState::new();
         state.push(collapsed_groupable("a"));
         state.push(collapsed_groupable("b"));
@@ -799,8 +801,8 @@ mod tests {
         let gaps = get_gap_after(&mut state);
         assert_eq!(
             gaps,
-            vec![0, 0, 1],
-            "collapsed groupable neighbors should have gap=0"
+            vec![1, 1, 1],
+            "collapsed multi-line tools should keep a 1-row separator"
         );
     }
 
@@ -847,10 +849,10 @@ mod tests {
         // agent→read: not both groupable → 1
         // read→edit: both groupable, edit expanded → 1
         // edit→list: both groupable, edit expanded → 1
-        // list→run: both groupable AND both collapsed → 0
+        // list→run: both groupable AND both collapsed, but multi-line → 1
         // run→agent2: not both groupable → 1
         // agent2: trailing → 1
-        assert_eq!(gaps, vec![1, 1, 1, 0, 1, 1]);
+        assert_eq!(gaps, vec![1, 1, 1, 1, 1, 1]);
     }
 
     #[test]
@@ -916,7 +918,8 @@ mod tests {
         state.push(collapsed_groupable("c"));
 
         let gaps_before = get_gap_after(&mut state);
-        assert_eq!(gaps_before, vec![0, 0, 1], "initially dense");
+        // Multi-line collapsed stubs already have separators.
+        assert_eq!(gaps_before, vec![1, 1, 1], "initially separated");
 
         // Expand entry 1
         state.set_selected(Some(1));
@@ -930,13 +933,13 @@ mod tests {
         assert_eq!(
             gaps_after,
             vec![1, 1, 1],
-            "after expanding middle, gaps appear"
+            "after expanding middle, gaps remain 1"
         );
     }
 
     #[test]
     fn test_gap_virtual_y_dense() {
-        // 3 collapsed groupable stubs, verify virtual_y positions are contiguous
+        // 3 collapsed groupable stubs with 1-row separators between them.
         let mut state = ScrollbackState::new();
         state.push(collapsed_groupable("a"));
         state.push(collapsed_groupable("b"));
@@ -948,12 +951,15 @@ mod tests {
 
         // Entry 0: y=0
         assert_eq!(virtual_y[0], 0);
-        // Entry 1: y=height[0] + gap[0] = height[0] + 0
-        assert_eq!(virtual_y[1], layouts[0].height as usize);
-        // Entry 2: y=height[0] + height[1] + 0 + 0
+        // Entry 1: y=height[0] + gap[0] = height[0] + 1
+        assert_eq!(
+            virtual_y[1],
+            layouts[0].height as usize + layouts[0].gap_after as usize
+        );
+        // Entry 2: y of entry1 + height[1] + gap[1]
         assert_eq!(
             virtual_y[2],
-            layouts[0].height as usize + layouts[1].height as usize
+            virtual_y[1] + layouts[1].height as usize + layouts[1].gap_after as usize
         );
     }
 
@@ -2334,11 +2340,14 @@ mod tests {
         assert_eq!(cached_height_at(&state, 0), 2);
         assert!(cached_height_at(&state, 1) > 1, "member 1 block is open");
         assert!(cached_height_at(&state, 2) > 0, "member 2 keeps its row");
-        // Closing it restores the member row within the same group.
+        // Closing it restores the member row within the same group. The
+        // collapsed read block now shows a framed output preview ("body"):
+        // header + top pad + 1 preview line + bottom pad = 4 rows (legacy
+        // header-only was 1).
         state.toggle_fold_selected();
         state.prepare_layout(80, 40);
         assert!(state.expanded_groups.contains(&ids[0]));
-        assert_eq!(cached_height_at(&state, 1), 1);
+        assert_eq!(cached_height_at(&state, 1), 4);
     }
 
     #[test]

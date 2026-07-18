@@ -38,9 +38,188 @@ pub use web_search::WebSearchToolCallBlock;
 
 use crate::scrollback::block::{BlockContent, join_searchable};
 use crate::scrollback::types::{
-    AccentStyle, BlockBackground, BlockContext, BlockOutput, DisplayMode,
+    AccentStyle, BlockBackground, BlockContext, BlockLine, BlockOutput, DisplayMode, Selectable,
 };
+use crate::theme::Theme;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use std::fmt;
+
+/// Max error lines shown in the collapsed preview. Short enough to stay
+/// glanceable; the rest is available via the fullscreen viewer.
+pub(crate) const COLLAPSED_ERROR_PREVIEW_LINES: usize = 2;
+
+/// How to style output lines in a collapsed preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreviewStyle {
+    /// Plain primary text (file content, search results, MCP JSON, etc.).
+    Plain,
+    /// Terminal-native ANSI/SGR highlighting (execute / list_dir stdout).
+    Terminal,
+}
+
+/// Append the collapsed body (error reason + output preview + footer) to
+/// an already-built header line list.
+///
+/// Order of content:
+/// 1. Error reason in red (always shown when present — this is why a block
+///    is red; never hide it behind collapse).
+/// 2. Output preview (up to `max_output_lines`, with proper highlighting).
+/// 3. Truncation hint when more output exists.
+///
+/// A single panel band frames error + output so the preview reads as one
+/// contiguous box under the header. Skipped entirely while the tool is still
+/// running (callers should check `!ctx.is_running` first) or when there's
+/// nothing to show.
+pub(crate) fn append_collapsed_body(
+    lines: &mut Vec<BlockLine>,
+    theme: &Theme,
+    error: Option<&str>,
+    output: Option<&str>,
+    max_output_lines: usize,
+    style: PreviewStyle,
+) {
+    let has_error = error.is_some_and(|e| !e.trim().is_empty());
+    let has_output = output.is_some_and(|o| !o.is_empty()) && max_output_lines > 0;
+    if !has_error && !has_output {
+        return;
+    }
+
+    // Top panel pad — frames the body as a contiguous box under the header.
+    lines.push(panel_pad(theme));
+
+    if has_error {
+        let err = error.unwrap_or("");
+        let err_lines: Vec<&str> = err.lines().collect();
+        let total = err_lines.len();
+        let shown = total.min(COLLAPSED_ERROR_PREVIEW_LINES);
+        let err_style = Style::default()
+            .fg(theme.accent_error)
+            .add_modifier(Modifier::BOLD);
+        for line in err_lines.iter().take(shown) {
+            lines.push(
+                BlockLine::from(Line::from(Span::styled(format!("  ✗ {line}"), err_style)))
+                    .with_panel_background(theme.bg_dark)
+                    .with_wrap(crate::scrollback::types::WrapMode::Word),
+            );
+        }
+        if total > shown {
+            let remaining = total - shown;
+            lines.push(
+                BlockLine::from(Line::from(Span::styled(
+                    format!("  … {remaining} more error lines — double-click to view"),
+                    theme.fg(theme.accent_error),
+                )))
+                .with_panel_background(theme.bg_dark),
+            );
+        }
+    }
+
+    if has_output {
+        // Thin separator between error and output when both present.
+        if has_error {
+            lines.push(panel_pad(theme));
+        }
+        let (mut preview, total) = render_output_preview(output, theme, max_output_lines, style);
+        lines.append(&mut preview);
+        if let Some(hint) = preview_hint_line(theme, max_output_lines, total) {
+            lines.push(hint);
+        }
+    }
+
+    // Bottom panel pad closes the box.
+    lines.push(panel_pad(theme));
+}
+
+/// Empty panel-band row used as top/bottom padding of the preview box.
+fn panel_pad(theme: &Theme) -> BlockLine {
+    BlockLine::from(Line::from("")).with_panel_background(theme.bg_dark)
+}
+
+/// Render up to `max_lines` of `output` as panel-band `BlockLine`s.
+///
+/// Returns `(preview_lines, total_source_lines)`. Lines are indented two
+/// spaces and given a panel background. With [`PreviewStyle::Terminal`],
+/// ANSI SGR colors/styles from the command stream are preserved.
+pub(crate) fn render_output_preview(
+    output: Option<&str>,
+    theme: &Theme,
+    max_lines: usize,
+    style: PreviewStyle,
+) -> (Vec<BlockLine>, usize) {
+    let Some(output) = output else {
+        return (Vec::new(), 0);
+    };
+    if max_lines == 0 || output.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    match style {
+        PreviewStyle::Terminal => render_terminal_preview(output, theme, max_lines),
+        PreviewStyle::Plain => render_plain_preview(output, theme, max_lines),
+    }
+}
+
+fn render_plain_preview(output: &str, theme: &Theme, max_lines: usize) -> (Vec<BlockLine>, usize) {
+    let content_lines: Vec<&str> = output.lines().collect();
+    let total = content_lines.len();
+    let indent = "  ";
+    let mut lines = Vec::with_capacity(total.min(max_lines));
+    for (i, line) in content_lines.iter().enumerate() {
+        if i >= max_lines {
+            break;
+        }
+        // Empty source lines still paint a panel band so the box stays solid.
+        let text = if line.is_empty() {
+            "  ".to_string()
+        } else {
+            format!("{indent}{line}")
+        };
+        lines.push(
+            BlockLine::from(Line::from(Span::styled(text, theme.primary())))
+                .with_panel_background(theme.bg_dark),
+        );
+    }
+    (lines, total)
+}
+
+fn render_terminal_preview(
+    output: &str,
+    theme: &Theme,
+    max_lines: usize,
+) -> (Vec<BlockLine>, usize) {
+    // Parse the full stream so ANSI state is correct for early lines, then
+    // take the first max_lines of the *rendered* transcript.
+    let rendered = crate::render::terminal_output::render_terminal_lines(output, theme.primary());
+    let total = rendered.len();
+    let mut lines = Vec::with_capacity(total.min(max_lines));
+    for rl in rendered.into_iter().take(max_lines) {
+        // Indent with a non-selectable spacer so ANSI-colored spans keep
+        // their own styles (prepending into the first span would tint it).
+        let mut spans = vec![Span::styled("  ".to_string(), theme.primary())];
+        spans.extend(rl.line.spans);
+        lines.push(BlockLine::styled(Line::from(spans)).with_panel_background(theme.bg_dark));
+    }
+    (lines, total)
+}
+
+/// Build the "… N more lines — double-click to view" hint line that follows a
+/// collapsed output preview. Returns `None` when there are no hidden lines
+/// (`shown >= total`) or when `total == 0`.
+pub(crate) fn preview_hint_line(theme: &Theme, shown: usize, total: usize) -> Option<BlockLine> {
+    if total == 0 || shown >= total {
+        return None;
+    }
+    let remaining = total - shown;
+    let mut line = BlockLine::from(Line::from(Span::styled(
+        format!("  … {remaining} more lines — double-click to view"),
+        theme.dim(),
+    )))
+    .with_panel_background(theme.bg_dark);
+    // Hint is chrome, not content — keep it out of text selection.
+    line.selectable = Selectable::None;
+    Some(line)
+}
 
 /// Shared selection-range id for tool-call header lines.
 ///
@@ -717,6 +896,134 @@ mod tests {
         assert_eq!(
             ToolCallBlock::Read(ReadToolCallBlock::new("/x/skills/deploy/SKILL.md")).label_kind(),
             Some(VerbGroupKind::Skill)
+        );
+    }
+
+    #[test]
+    fn render_output_preview_handles_none_and_empty() {
+        let theme = Theme::current();
+        let (lines, total) = render_output_preview(None, &theme, 3, PreviewStyle::Plain);
+        assert!(lines.is_empty());
+        assert_eq!(total, 0);
+        let (lines, total) = render_output_preview(Some(""), &theme, 3, PreviewStyle::Plain);
+        assert!(lines.is_empty());
+        assert_eq!(total, 0);
+        let (lines, total) = render_output_preview(Some("a\nb\nc"), &theme, 0, PreviewStyle::Plain);
+        assert!(lines.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn render_output_preview_truncates_to_max() {
+        let theme = Theme::current();
+        let (lines, total) =
+            render_output_preview(Some("a\nb\nc\nd\ne"), &theme, 3, PreviewStyle::Plain);
+        assert_eq!(lines.len(), 3, "only the first max_lines are rendered");
+        assert_eq!(total, 5, "total reflects the full source line count");
+    }
+
+    #[test]
+    fn render_output_preview_under_max_returns_all() {
+        let theme = Theme::current();
+        let (lines, total) = render_output_preview(Some("a\nb"), &theme, 3, PreviewStyle::Plain);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn preview_hint_line_only_when_truncated() {
+        let theme = Theme::current();
+        assert!(preview_hint_line(&theme, 3, 2).is_none());
+        assert!(preview_hint_line(&theme, 3, 0).is_none());
+        let hint = preview_hint_line(&theme, 3, 5).expect("hint when total > shown");
+        let plain: String = hint
+            .content
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(plain.contains("2 more lines"), "hint text: {plain}");
+    }
+
+    #[test]
+    fn append_collapsed_body_shows_error_reason() {
+        let theme = Theme::current();
+        let mut lines = Vec::new();
+        append_collapsed_body(
+            &mut lines,
+            &theme,
+            Some("exit code 1: permission denied"),
+            None,
+            3,
+            PreviewStyle::Plain,
+        );
+        assert!(
+            !lines.is_empty(),
+            "failed tools must surface an error body when collapsed"
+        );
+        let plain: String = lines
+            .iter()
+            .flat_map(|l| l.content.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plain.contains("permission denied"),
+            "error text must be visible, got: {plain}"
+        );
+        assert!(
+            plain.contains('✗'),
+            "error lines should carry a failure marker"
+        );
+    }
+
+    #[test]
+    fn append_collapsed_body_error_shown_even_when_preview_disabled() {
+        let theme = Theme::current();
+        let mut lines = Vec::new();
+        // max_output_lines = 0 disables the stdout preview, but the error
+        // reason must still appear — that is why the block is red.
+        append_collapsed_body(
+            &mut lines,
+            &theme,
+            Some("command not found"),
+            Some("stdout that should not appear"),
+            0,
+            PreviewStyle::Plain,
+        );
+        let plain: String = lines
+            .iter()
+            .flat_map(|l| l.content.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(plain.contains("command not found"));
+        assert!(
+            !plain.contains("stdout that should not appear"),
+            "output must stay hidden when max_output_lines is 0"
+        );
+    }
+
+    #[test]
+    fn terminal_preview_strips_escape_codes_and_keeps_text() {
+        let theme = Theme::current();
+        // ANSI-wrapped "fail" then a second line "ok". The terminal preview
+        // must feed the stream through the VTE emulator so escape codes are
+        // not painted as literal text.
+        let raw = "\x1b[31mfail\x1b[0m\nok";
+        let (lines, total) = render_output_preview(Some(raw), &theme, 3, PreviewStyle::Terminal);
+        assert_eq!(total, 2);
+        assert_eq!(lines.len(), 2);
+        let plain: String = lines
+            .iter()
+            .flat_map(|l| l.content.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(
+            plain.contains("fail") && plain.contains("ok"),
+            "de-escaped text must be present, got: {plain}"
+        );
+        assert!(
+            !plain.contains("\x1b") && !plain.contains("[31m"),
+            "raw escape sequences must not appear, got: {plain}"
         );
     }
 }

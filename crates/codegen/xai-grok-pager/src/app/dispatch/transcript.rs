@@ -6,7 +6,6 @@ use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::app_view::{ActiveView, AppView};
 use crate::scrollback::block::{BlockContent, RenderBlock};
-use crate::scrollback::blocks::ToolCallBlock;
 use agent_client_protocol as acp;
 use xai_grok_telemetry::session_ctx::log_event;
 
@@ -256,57 +255,32 @@ pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
         }
 
         // Try to create a normal viewer for the selected block type.
-        let viewer = match &entry.block {
-            RenderBlock::Thinking(_) | RenderBlock::AgentMessage(_) => {
-                BlockViewerPane::for_markdown(entry.id, entry)
-            }
-            RenderBlock::ToolCall(ToolCallBlock::Execute(_)) => {
-                BlockViewerPane::for_execute(entry.id, entry)
-            }
-            RenderBlock::ToolCall(ToolCallBlock::Edit(_)) => {
-                BlockViewerPane::for_edit(entry.id, entry)
-            }
-            RenderBlock::ToolCall(ToolCallBlock::Read(_)) => {
-                BlockViewerPane::for_read(entry.id, entry)
-            }
-            RenderBlock::ToolCall(ToolCallBlock::Search(_)) => {
-                BlockViewerPane::for_grep(entry.id, entry)
-            }
-            RenderBlock::ToolCall(ToolCallBlock::ListDir(_)) => {
-                BlockViewerPane::for_list_dir(entry.id, entry)
-            }
-            RenderBlock::ToolCall(ToolCallBlock::WebFetch(_)) => {
-                BlockViewerPane::for_web_fetch(entry.id, entry)
-            }
-            RenderBlock::ToolCall(ToolCallBlock::WebSearch(_)) => {
-                BlockViewerPane::for_web_search(entry.id, entry)
-            }
-            RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(_)) => {
-                BlockViewerPane::for_integration_search(entry.id, entry)
-            }
-            RenderBlock::ToolCall(ToolCallBlock::UseTool(_)) => {
-                BlockViewerPane::for_use_tool(entry.id, entry)
-            }
-            RenderBlock::BgTask(block) => {
-                let stdout = agent
-                    .session
-                    .bg_tasks
-                    .get(&block.task_id)
-                    .map(|t| t.stdout.as_str())
-                    .unwrap_or("");
-                let is_running = agent
-                    .session
-                    .bg_tasks
-                    .get(&block.task_id)
-                    .is_some_and(|t| t.status == crate::app::agent::BgTaskStatus::Running);
-                Some(BlockViewerPane::for_bg_task(
-                    entry.id,
-                    &block.task_id,
-                    stdout,
-                    is_running,
-                ))
-            }
-            _ => None,
+        //
+        // Tool-call and markdown blocks share a single dispatch via
+        // `BlockViewerPane::for_entry` (the same constructor double-click uses,
+        // so the two paths can never drift). BgTask is special-cased because
+        // it pulls live stdout from the central `bg_tasks` store rather than
+        // from the entry itself.
+        let viewer = if let RenderBlock::BgTask(block) = &entry.block {
+            let stdout = agent
+                .session
+                .bg_tasks
+                .get(&block.task_id)
+                .map(|t| t.stdout.as_str())
+                .unwrap_or("");
+            let is_running = agent
+                .session
+                .bg_tasks
+                .get(&block.task_id)
+                .is_some_and(|t| t.status == crate::app::agent::BgTaskStatus::Running);
+            Some(BlockViewerPane::for_bg_task(
+                entry.id,
+                &block.task_id,
+                stdout,
+                is_running,
+            ))
+        } else {
+            BlockViewerPane::for_entry(entry)
         };
 
         if viewer.is_some() {

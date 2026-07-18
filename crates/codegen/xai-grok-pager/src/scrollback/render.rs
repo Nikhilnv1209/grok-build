@@ -2678,9 +2678,9 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_block_body_urls_not_visible() {
-        // URLs in the output body are not rendered when collapsed (only the
-        // header line is shown), so no link overlay entries should appear.
+    fn collapsed_block_body_urls_visible_in_preview() {
+        // Collapsed execute blocks now show a brief output preview, so URLs in
+        // the output body ARE rendered and linkified (clickable in the preview).
         let entries = vec![ScrollbackEntry::new(RenderBlock::execute_with_output(
             "echo test",
             "See https://example.com",
@@ -2692,9 +2692,19 @@ mod tests {
         let viewport = Rect::new(0, 0, 80, 10);
         let result = render_with_scratch(&entries, viewport, 0, None);
 
-        assert!(
-            result.link_overlay.is_empty(),
-            "output-body URLs should not appear when block is collapsed"
+        let url_count = result
+            .link_overlay
+            .links()
+            .iter()
+            .filter(|l| {
+                resolve_link_target(&l.target)
+                    .and_then(|resolved| resolved.osc8_url)
+                    .is_some_and(|url| url.as_ref() == "https://example.com")
+            })
+            .count();
+        assert_eq!(
+            url_count, 1,
+            "output-body URL should appear in the collapsed preview"
         );
     }
 

@@ -4,7 +4,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 use xai_grok_workspace::permission::mcp_titleize_segment;
 
-use super::TOOL_HEADER_RANGE;
+use super::{PreviewStyle, TOOL_HEADER_RANGE, append_collapsed_body};
 use crate::render::line_utils::truncate_str;
 use crate::scrollback::block::BlockContent;
 use crate::scrollback::types::{
@@ -182,13 +182,44 @@ impl BlockContent for SearchToolCallBlock {
             ctx.mute_when_collapsed(ctx.appearance.scrollback.blocks.tool.muted_collapsed);
 
         match ctx.mode {
-            DisplayMode::Collapsed => BlockOutput {
-                lines: vec![self.header_block_line(self.header_line(
+            DisplayMode::Collapsed => {
+                let mut lines: Vec<BlockLine> = vec![self.header_block_line(self.header_line(
                     &theme,
                     muted_collapsed,
                     Some(ctx.content_width()),
-                ))],
-            },
+                ))];
+                if !ctx.is_running {
+                    let max = ctx
+                        .appearance
+                        .scrollback
+                        .blocks
+                        .tool
+                        .collapsed_preview_lines as usize;
+                    // One preview line per discovered tool: "name: description".
+                    let preview_str = if self.results.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            self.results
+                                .iter()
+                                .map(|t| {
+                                    format!("{}: {}", t.name, t.description.replace('\n', " "))
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                    };
+                    append_collapsed_body(
+                        &mut lines,
+                        &theme,
+                        self.error.as_deref(),
+                        preview_str.as_deref(),
+                        max,
+                        PreviewStyle::Plain,
+                    );
+                }
+                BlockOutput { lines }
+            }
             DisplayMode::Truncated | DisplayMode::Expanded => {
                 let header = self.header_line(&theme, false, None);
                 let wrapped = crate::render::wrapping::wrap_header_flush(
@@ -261,13 +292,15 @@ impl BlockContent for SearchToolCallBlock {
     }
 
     fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle> {
+        let theme = Theme::current();
+        // Failed tools keep the red accent even when collapsed.
+        if self.error.is_some() {
+            return Some(AccentStyle::static_color(theme.accent_error));
+        }
         if ctx.mode == DisplayMode::Collapsed {
             return None;
         }
-        let theme = Theme::current();
-        if self.error.is_some() {
-            Some(AccentStyle::static_color(theme.accent_error))
-        } else if ctx.is_running {
+        if ctx.is_running {
             Some(AccentStyle::animated(theme.accent_running))
         } else {
             Some(AccentStyle::static_color(theme.accent_tool))

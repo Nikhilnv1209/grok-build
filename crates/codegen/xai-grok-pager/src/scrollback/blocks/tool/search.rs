@@ -9,7 +9,7 @@ use crate::scrollback::types::{
 };
 use crate::theme::Theme;
 
-use super::TOOL_HEADER_RANGE;
+use super::{PreviewStyle, TOOL_HEADER_RANGE, append_collapsed_body};
 
 /// A single line match from search results.
 #[derive(Debug, Clone)]
@@ -404,14 +404,47 @@ impl BlockContent for SearchToolCallBlock {
         let dim_details = tool_cfg.dim_details;
 
         match ctx.mode {
-            DisplayMode::Collapsed => BlockOutput {
-                lines: vec![self.header_block_line(self.header_line(
+            DisplayMode::Collapsed => {
+                let mut lines: Vec<BlockLine> = vec![self.header_block_line(self.header_line(
                     &theme,
                     muted_collapsed,
                     dim_details,
                     Some(ctx.content_width()),
-                ))],
-            },
+                ))];
+                if !ctx.is_running {
+                    let max = tool_cfg.collapsed_preview_lines as usize;
+                    // One preview line per matching line: "path:line: content".
+                    let preview_str = if self.file_matches.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            self.file_matches
+                                .iter()
+                                .flat_map(|fm| {
+                                    fm.matches.iter().map(move |m| {
+                                        format!(
+                                            "{}:{}: {}",
+                                            fm.path,
+                                            m.line_number,
+                                            m.content.replace('\n', " ")
+                                        )
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                    };
+                    append_collapsed_body(
+                        &mut lines,
+                        &theme,
+                        self.error.as_deref(),
+                        preview_str.as_deref(),
+                        max,
+                        PreviewStyle::Plain,
+                    );
+                }
+                BlockOutput { lines }
+            }
             DisplayMode::Truncated | DisplayMode::Expanded => {
                 let mut lines: Vec<BlockLine> = vec![self.header_block_line(self.header_line(
                     &theme,
@@ -519,7 +552,14 @@ impl BlockContent for SearchToolCallBlock {
     }
 
     fn accent(&self, _ctx: &BlockContext) -> Option<AccentStyle> {
-        None // Search blocks never have an accent line
+        // Failed searches keep a red accent bar so the failure is obvious
+        // without expanding.
+        if self.error.is_some() {
+            let theme = Theme::current();
+            Some(AccentStyle::static_color(theme.accent_error))
+        } else {
+            None
+        }
     }
 
     fn bullet(&self, _ctx: &BlockContext) -> Option<AccentStyle> {

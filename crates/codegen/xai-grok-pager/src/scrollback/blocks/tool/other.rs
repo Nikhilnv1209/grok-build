@@ -307,14 +307,18 @@ impl BlockContent for OtherToolCallBlock {
     }
 
     fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle> {
-        // No accent when collapsed — keeps accents reserved for Execute blocks in dense groups
+        let theme = Theme::current();
+        // Failed tools keep the red accent even when collapsed so the failure
+        // is visible without expanding.
+        if self.error.is_some() {
+            return Some(AccentStyle::static_color(theme.accent_error));
+        }
+        // No accent when collapsed — keeps accents reserved for Execute blocks
+        // in dense groups.
         if ctx.mode == DisplayMode::Collapsed {
             return None;
         }
-        let theme = Theme::current();
-        if self.error.is_some() {
-            Some(AccentStyle::static_color(theme.accent_error))
-        } else if ctx.is_running {
+        if ctx.is_running {
             Some(AccentStyle::animated(theme.accent_running))
         } else {
             Some(AccentStyle::static_color(theme.accent_tool))

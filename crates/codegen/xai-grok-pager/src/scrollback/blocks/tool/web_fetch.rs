@@ -3,7 +3,7 @@
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 
-use super::TOOL_HEADER_RANGE;
+use super::{PreviewStyle, TOOL_HEADER_RANGE, append_collapsed_body};
 use crate::render::line_utils::truncate_str;
 use crate::scrollback::block::BlockContent;
 use crate::scrollback::types::{
@@ -198,13 +198,30 @@ impl BlockContent for WebFetchToolCallBlock {
             ctx.mute_when_collapsed(ctx.appearance.scrollback.blocks.tool.muted_collapsed);
 
         match ctx.mode {
-            DisplayMode::Collapsed => BlockOutput {
-                lines: vec![self.header_block_line(self.header_line(
+            DisplayMode::Collapsed => {
+                let mut lines: Vec<BlockLine> = vec![self.header_block_line(self.header_line(
                     &theme,
                     muted_collapsed,
                     Some(ctx.content_width()),
-                ))],
-            },
+                ))];
+                if !ctx.is_running {
+                    let max = ctx
+                        .appearance
+                        .scrollback
+                        .blocks
+                        .tool
+                        .collapsed_preview_lines as usize;
+                    append_collapsed_body(
+                        &mut lines,
+                        &theme,
+                        self.error.as_deref(),
+                        self.output.as_deref(),
+                        max,
+                        PreviewStyle::Plain,
+                    );
+                }
+                BlockOutput { lines }
+            }
             // Fetch completes in one shot (no streaming), so Truncated
             // is never visible in practice. Treat it the same as Expanded
             // to always show the full content the model saw.
@@ -290,13 +307,15 @@ impl BlockContent for WebFetchToolCallBlock {
     }
 
     fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle> {
+        let theme = Theme::current();
+        // Failed tools keep the red accent even when collapsed.
+        if self.error.is_some() {
+            return Some(AccentStyle::static_color(theme.accent_error));
+        }
         if ctx.mode == DisplayMode::Collapsed {
             return None;
         }
-        let theme = Theme::current();
-        if self.error.is_some() {
-            Some(AccentStyle::static_color(theme.accent_error))
-        } else if ctx.is_running {
+        if ctx.is_running {
             Some(AccentStyle::animated(theme.accent_running))
         } else {
             Some(AccentStyle::static_color(theme.accent_tool))

@@ -4,6 +4,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 use xai_grok_workspace::permission::{MCP_TOOL_NAME_DELIMITER, mcp_titleize_segment};
 
+use super::{PreviewStyle, append_collapsed_body};
 use crate::render::line_utils::truncate_str;
 use crate::scrollback::block::BlockContent;
 use crate::scrollback::types::{
@@ -149,12 +150,29 @@ impl BlockContent for UseToolCallBlock {
             ctx.mute_when_collapsed(ctx.appearance.scrollback.blocks.tool.muted_collapsed);
 
         match ctx.mode {
-            DisplayMode::Collapsed => BlockOutput {
-                lines: vec![
+            DisplayMode::Collapsed => {
+                let mut lines: Vec<BlockLine> = vec![
                     self.header_line(&theme, muted_collapsed, Some(ctx.content_width()))
                         .into(),
-                ],
-            },
+                ];
+                if !ctx.is_running {
+                    let max = ctx
+                        .appearance
+                        .scrollback
+                        .blocks
+                        .tool
+                        .collapsed_preview_lines as usize;
+                    append_collapsed_body(
+                        &mut lines,
+                        &theme,
+                        self.error.as_deref(),
+                        self.output.as_deref(),
+                        max,
+                        PreviewStyle::Plain,
+                    );
+                }
+                BlockOutput { lines }
+            }
             DisplayMode::Truncated | DisplayMode::Expanded => {
                 let header = self.header_line(&theme, false, None);
                 let wrapped = crate::render::wrapping::wrap_header_flush(
@@ -228,13 +246,16 @@ impl BlockContent for UseToolCallBlock {
     }
 
     fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle> {
+        let theme = Theme::current();
+        // Failed tools keep the red accent even when collapsed so the failure
+        // is visible without expanding.
+        if self.error.is_some() {
+            return Some(AccentStyle::static_color(theme.accent_error));
+        }
         if ctx.mode == DisplayMode::Collapsed {
             return None;
         }
-        let theme = Theme::current();
-        if self.error.is_some() {
-            Some(AccentStyle::static_color(theme.accent_error))
-        } else if ctx.is_running {
+        if ctx.is_running {
             Some(AccentStyle::animated(theme.accent_running))
         } else {
             Some(AccentStyle::static_color(theme.accent_tool))

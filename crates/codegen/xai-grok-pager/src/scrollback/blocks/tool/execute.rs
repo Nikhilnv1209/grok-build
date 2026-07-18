@@ -3,7 +3,7 @@
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 
-use super::TOOL_HEADER_RANGE;
+use super::{PreviewStyle, TOOL_HEADER_RANGE, append_collapsed_body};
 use crate::appearance::ExecuteHeaderStyle;
 use crate::render::wrapping::word_wrap_lines_with_joiners;
 use crate::scrollback::block::BlockContent;
@@ -673,6 +673,19 @@ impl BlockContent for ExecuteToolCallBlock {
                     true,
                     false, // hide command when description is the title
                 );
+                // Collapsed body: error reason (why it's red) + ANSI-highlighted
+                // stdout preview. Errors always show; stdout preview is gated by
+                // collapsed_preview_lines (0 = header + error only).
+                if !ctx.is_running {
+                    append_collapsed_body(
+                        &mut lines,
+                        &theme,
+                        self.error.as_deref(),
+                        self.output.as_deref(),
+                        config.collapsed_preview_lines as usize,
+                        PreviewStyle::Terminal,
+                    );
+                }
                 BlockOutput { lines }
             }
             DisplayMode::Truncated => self.render_with_truncation(

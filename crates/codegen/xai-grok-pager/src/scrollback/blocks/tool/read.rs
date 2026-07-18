@@ -5,7 +5,7 @@ use std::path::Path;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
-use super::{LineRange, TOOL_HEADER_RANGE};
+use super::{LineRange, PreviewStyle, TOOL_HEADER_RANGE, append_collapsed_body};
 use crate::prompt_images::ScrollbackImageRef;
 use crate::render::wrapping::word_wrap_lines_with_joiners;
 use crate::scrollback::block::BlockContent;
@@ -354,8 +354,8 @@ impl BlockContent for ReadToolCallBlock {
 
         let cwd = ctx.cwd.as_deref();
         match ctx.mode {
-            DisplayMode::Collapsed => BlockOutput {
-                lines: vec![self.header_block_line(
+            DisplayMode::Collapsed => {
+                let mut lines: Vec<BlockLine> = vec![self.header_block_line(
                     self.collapsed_line(
                         &theme,
                         muted_collapsed,
@@ -365,8 +365,19 @@ impl BlockContent for ReadToolCallBlock {
                         Some(ctx.content_width()),
                     ),
                     cwd,
-                )],
-            },
+                )];
+                if !ctx.is_running {
+                    append_collapsed_body(
+                        &mut lines,
+                        &theme,
+                        self.error.as_deref(),
+                        self.content.as_deref(),
+                        tool_cfg.collapsed_preview_lines as usize,
+                        PreviewStyle::Plain,
+                    );
+                }
+                BlockOutput { lines }
+            }
             DisplayMode::Truncated | DisplayMode::Expanded => {
                 let truncate = if ctx.mode == DisplayMode::Truncated {
                     Some((FIRST_LINES, LAST_LINES))
@@ -401,7 +412,14 @@ impl BlockContent for ReadToolCallBlock {
     }
 
     fn accent(&self, _ctx: &BlockContext) -> Option<AccentStyle> {
-        None
+        // Failed reads keep a red accent bar so the failure is obvious without
+        // expanding; successful reads stay accent-free (header-only look).
+        if self.error.is_some() {
+            let theme = Theme::current();
+            Some(AccentStyle::static_color(theme.accent_error))
+        } else {
+            None
+        }
     }
 
     fn bullet(&self, _ctx: &BlockContext) -> Option<AccentStyle> {
