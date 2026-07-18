@@ -898,13 +898,17 @@ impl AgentView {
             .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::BgTask(_)));
         let is_subagent = entry_block
             .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::Subagent(_)));
-        // Tool-call blocks with a dedicated fullscreen viewer open that viewer
-        // on double-click (same as Enter), mirroring bg-task / subagent.
-        // Blocks without a viewer (Lifecycle, Skill, Other) fall through to
-        // the default fold behavior below.
-        let is_tool_call = entry_block.is_some_and(|b| {
-            matches!(b, crate::scrollback::block::RenderBlock::ToolCall(_))
-                && b.has_normal_fullscreen_viewer()
+        // Any block with a normal fullscreen viewer (tools, thinking, agent
+        // messages) opens that viewer on double-click (same as Enter).
+        // Bg-task / subagent are handled in dedicated arms below (they need
+        // the stdout store / child session view, not for_entry).
+        let opens_viewer = entry_block.is_some_and(|b| {
+            b.has_normal_fullscreen_viewer()
+                && !matches!(
+                    b,
+                    crate::scrollback::block::RenderBlock::BgTask(_)
+                        | crate::scrollback::block::RenderBlock::Subagent(_)
+                )
         });
 
         // Word-select tip probe (see WORD_SELECT_REPEAT_WINDOW): assistant
@@ -1014,10 +1018,11 @@ impl AgentView {
                     self.scrollback.scroll_to_entry_top(idx);
                 }
             }
-            2 if is_tool_call => {
-                // Double-click tool block: open the block viewer dialog (same
-                // as Enter). Reuses the unified `for_entry` constructor so the
-                // double-click and Enter paths can never drift.
+            2 if opens_viewer => {
+                // Double-click tool / thinking / agent-message: open the block
+                // viewer dialog (same as Enter). Reuses the unified `for_entry`
+                // constructor so the double-click and Enter paths can never
+                // drift.
                 if let Some(entry) = self.scrollback.entry(idx) {
                     self.block_viewer =
                         crate::views::block_viewer::BlockViewerPane::for_entry(entry);

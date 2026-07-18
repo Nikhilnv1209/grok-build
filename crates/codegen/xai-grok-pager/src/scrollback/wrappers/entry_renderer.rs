@@ -435,13 +435,16 @@ impl<'a> EntryRenderer<'a> {
         if let Some(lines) = self.entry.cached_estimate_lines(content_width) {
             return lines;
         }
-        // Collapsed / Truncated foldable entries render a compact ~1-line header,
-        // NOT their (often huge) hidden body. Use the ENTRY-level foldability
-        // (`block.is_foldable()` OR attached hooks), matching the fold path, so a
-        // hook-only-foldable collapsed entry isn't over-counted.
+        // Collapsed / Truncated foldable entries used to be a 1-line header
+        // shortcut (full body is hidden). Collapsed tool/thinking blocks now
+        // also carry a short framed preview — estimate that body so off-screen
+        // scroll math stays equal to the exact on-screen height. Use the
+        // ENTRY-level foldability (`block.is_foldable()` OR attached hooks),
+        // matching the fold path, so a hook-only-foldable collapsed entry
+        // isn't over-counted as full expanded body.
         let lines = if self.entry.display_mode != DisplayMode::Expanded && self.entry.is_foldable()
         {
-            1
+            self.estimate_collapsed_foldable_lines()
         } else {
             match self.entry.block.searchable_text() {
                 Some(text) => estimate_wrapped_line_count(&text, content_width),
@@ -450,6 +453,106 @@ impl<'a> EntryRenderer<'a> {
         };
         self.entry.store_estimate_lines(content_width, lines);
         lines
+    }
+
+    /// Header + optional collapsed-body preview rows for foldable non-expanded
+    /// entries. Truncated mode (e.g. streaming thinking) still uses the compact
+    /// 1-line shortcut — the live truncated path is measured exactly on screen.
+    fn estimate_collapsed_foldable_lines(&self) -> u16 {
+        use crate::scrollback::blocks::ToolCallBlock;
+        use crate::scrollback::blocks::tool::estimate_collapsed_body_rows;
+
+        // Truncated (middle fold) is not the multi-line collapsed preview path.
+        if self.entry.display_mode == DisplayMode::Truncated {
+            return 1;
+        }
+
+        let header: u16 = 1;
+        if self.entry.is_running {
+            return header;
+        }
+
+        let body = match &self.entry.block {
+            RenderBlock::Thinking(b) => {
+                let max = self
+                    .appearance
+                    .scrollback
+                    .blocks
+                    .thinking
+                    .collapsed_preview_lines as usize;
+                let text = b.text();
+                let preview = if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(text.trim_end())
+                };
+                estimate_collapsed_body_rows(None, preview, max)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::Execute(e)) => {
+                let max = self
+                    .appearance
+                    .scrollback
+                    .blocks
+                    .execute
+                    .collapsed_preview_lines as usize;
+                estimate_collapsed_body_rows(e.error.as_deref(), e.output.as_deref(), max)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::UseTool(t)) => {
+                let max = self
+                    .appearance
+                    .scrollback
+                    .blocks
+                    .tool
+                    .collapsed_preview_lines as usize;
+                estimate_collapsed_body_rows(t.error.as_deref(), t.output.as_deref(), max)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::WebFetch(t)) => {
+                let max = self
+                    .appearance
+                    .scrollback
+                    .blocks
+                    .tool
+                    .collapsed_preview_lines as usize;
+                estimate_collapsed_body_rows(t.error.as_deref(), t.output.as_deref(), max)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::WebSearch(t)) => {
+                let max = self
+                    .appearance
+                    .scrollback
+                    .blocks
+                    .tool
+                    .collapsed_preview_lines as usize;
+                estimate_collapsed_body_rows(t.error.as_deref(), t.content.as_deref(), max)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::Read(t)) => {
+                let max = self
+                    .appearance
+                    .scrollback
+                    .blocks
+                    .tool
+                    .collapsed_preview_lines as usize;
+                estimate_collapsed_body_rows(t.error.as_deref(), t.content.as_deref(), max)
+            }
+            RenderBlock::ToolCall(ToolCallBlock::ListDir(t)) => {
+                let max = self
+                    .appearance
+                    .scrollback
+                    .blocks
+                    .tool
+                    .collapsed_preview_lines as usize;
+                let output = if t.output.is_empty() {
+                    None
+                } else {
+                    Some(t.output.as_str())
+                };
+                estimate_collapsed_body_rows(t.error.as_deref(), output, max)
+            }
+            // Search / IntegrationSearch / MemorySearch build preview strings
+            // from structured results — the exact path is cheap enough and rare
+            // for bulk-history sizing; keep the 1-line shortcut.
+            _ => 0,
+        };
+        header.saturating_add(body)
     }
 
     /// Combine a content-line count with this entry's vpad + inline-media rows.
@@ -1631,7 +1734,7 @@ mod tests {
         assert_eq!(
             r.estimate_height(80),
             r.desired_height(80),
-            "collapsed thinking estimate must equal exact (one summary line)"
+            "collapsed thinking estimate must equal exact (header + framed preview)"
         );
     }
 

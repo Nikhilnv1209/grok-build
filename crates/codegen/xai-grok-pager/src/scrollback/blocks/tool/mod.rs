@@ -136,6 +136,47 @@ fn panel_pad(theme: &Theme) -> BlockLine {
     BlockLine::from(Line::from("")).with_panel_background(theme.bg_dark)
 }
 
+/// Cheap height estimate for the body produced by [`append_collapsed_body`]
+/// (not including the header line). Must stay in lockstep with that helper
+/// so off-screen scroll estimates match on-screen exact heights.
+///
+/// Returns 0 when nothing would be appended (no error and no output preview).
+pub(crate) fn estimate_collapsed_body_rows(
+    error: Option<&str>,
+    output: Option<&str>,
+    max_output_lines: usize,
+) -> u16 {
+    let has_error = error.is_some_and(|e| !e.trim().is_empty());
+    let output_total = output
+        .filter(|o| !o.is_empty())
+        .map(|o| o.lines().count())
+        .unwrap_or(0);
+    let has_output = output_total > 0 && max_output_lines > 0;
+    if !has_error && !has_output {
+        return 0;
+    }
+    let mut rows: u16 = 1; // top pad
+    if has_error {
+        let total = error.unwrap_or("").lines().count();
+        let shown = total.min(COLLAPSED_ERROR_PREVIEW_LINES);
+        rows = rows.saturating_add(shown as u16);
+        if total > shown {
+            rows = rows.saturating_add(1); // error-more hint
+        }
+    }
+    if has_output {
+        if has_error {
+            rows = rows.saturating_add(1); // separator pad
+        }
+        let shown = output_total.min(max_output_lines);
+        rows = rows.saturating_add(shown as u16);
+        if output_total > shown {
+            rows = rows.saturating_add(1); // more-lines hint
+        }
+    }
+    rows.saturating_add(1) // bottom pad
+}
+
 /// Render up to `max_lines` of `output` as panel-band `BlockLine`s.
 ///
 /// Returns `(preview_lines, total_source_lines)`. Lines are indented two

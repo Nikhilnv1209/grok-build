@@ -12,6 +12,7 @@ use crate::theme::Theme;
 
 use super::markdown_content::MarkdownContent;
 use super::quote_bar::QuoteBarStrip;
+use super::tool::{PreviewStyle, append_collapsed_body};
 
 /// Block displaying agent thinking content with markdown rendering.
 ///
@@ -197,13 +198,45 @@ impl ThinkingBlock {
         }
     }
 
-    /// Render the collapsed view: header line only, truncated to fit.
+    /// Render the collapsed view: header + optional framed thought preview.
+    ///
+    /// Matches the tool-call pattern: a one-line title, then a brief panel of
+    /// body text so the user can glance at what was thought without expanding.
+    /// While streaming (`ctx.is_running`), only the header is shown — the
+    /// Truncated mode already carries the live tail.
     fn render_collapsed(&self, ctx: &BlockContext) -> BlockOutput {
         let line = self.header_line(ctx);
         let line = crate::render::line_utils::truncate_line(line, ctx.content_width());
-        BlockOutput {
-            lines: vec![BlockLine::separator(line)],
+        let mut lines = vec![BlockLine::separator(line)];
+
+        if !ctx.is_running {
+            let max = ctx
+                .appearance
+                .scrollback
+                .blocks
+                .thinking
+                .collapsed_preview_lines as usize;
+            let text = self.text();
+            let preview = if text.trim().is_empty() {
+                None
+            } else {
+                // Drop a single trailing newline so `lines().count()` matches
+                // visible content; keep internal blank lines so the panel
+                // shape is stable.
+                Some(text.trim_end().to_string())
+            };
+            let theme = Theme::current();
+            append_collapsed_body(
+                &mut lines,
+                &theme,
+                None, // thinking has no error channel
+                preview.as_deref(),
+                max,
+                PreviewStyle::Plain,
+            );
         }
+
+        BlockOutput { lines }
     }
 
     /// Prepend header + blank line to output, if header config is enabled.
@@ -367,10 +400,19 @@ impl BlockContent for ThinkingBlock {
         if !cfg.accent_enabled {
             return None;
         }
-        // No accent when collapsed — accent is only for expanded/truncated content.
-        // TODO: revisit if we want accent in collapsed state with header enabled.
+        // Collapsed with a body preview keeps a static thinking accent so the
+        // multi-line panel is scannable (parity with tool success/error bars).
+        // Header-only collapsed (preview disabled / empty / still running path)
+        // stays accent-free.
         if ctx.mode == DisplayMode::Collapsed {
-            return None;
+            let has_preview = !ctx.is_running
+                && cfg.collapsed_preview_lines > 0
+                && !self.text().trim().is_empty();
+            return if has_preview {
+                Some(AccentStyle::static_color(cfg.accent))
+            } else {
+                None
+            };
         }
         if cfg.animate && ctx.is_running {
             Some(AccentStyle::animated(cfg.accent))
@@ -488,11 +530,83 @@ mod tests {
 
     #[test]
     fn collapsed_thinking_header_is_non_selectable() {
-        let block = ThinkingBlock::new("hello world");
+        // Empty thought → header only (no panel).
+        let block = ThinkingBlock::new("");
         let out = block.output(&ctx(DisplayMode::Collapsed, 40));
         assert_eq!(out.lines.len(), 1);
         assert!(matches!(out.lines[0].selectable, Selectable::None));
         assert_eq!(out.lines[0].selection_range, None);
+    }
+
+    #[test]
+    fn collapsed_thinking_shows_body_preview() {
+        let block = ThinkingBlock::new("line one\nline two\nline three\nline four\nline five");
+        let out = block.output(&ctx(DisplayMode::Collapsed, 80));
+        // Header + top pad + 3 preview lines + hint + bottom pad.
+        assert!(
+            out.lines.len() > 1,
+            "collapsed thinking with content must show a body preview"
+        );
+        assert!(matches!(out.lines[0].selectable, Selectable::None));
+        let plain: String = out
+            .lines
+            .iter()
+            .flat_map(|l| l.content.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plain.contains("line one"),
+            "preview must include first lines"
+        );
+        assert!(
+            plain.contains("more lines") || plain.contains("line three"),
+            "preview should cap at collapsed_preview_lines and hint remaining, got: {plain}"
+        );
+        // Fifth line should not appear when default preview is 3.
+        assert!(
+            !plain.contains("line five"),
+            "lines beyond the preview budget must be hidden, got: {plain}"
+        );
+    }
+
+    #[test]
+    fn collapsed_thinking_preview_disabled_is_header_only() {
+        let mut appearance = AppearanceConfig::default();
+        appearance
+            .scrollback
+            .blocks
+            .thinking
+            .collapsed_preview_lines = 0;
+        let ctx = BlockContext {
+            appearance,
+            ..ctx(DisplayMode::Collapsed, 40)
+        };
+        let block = ThinkingBlock::new("secret thought that should stay hidden");
+        let out = block.output(&ctx);
+        assert_eq!(out.lines.len(), 1, "preview_lines=0 restores header-only");
+        let plain: String = out.lines[0]
+            .content
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !plain.contains("secret"),
+            "body must not leak when preview is disabled"
+        );
+    }
+
+    #[test]
+    fn collapsed_thinking_running_skips_static_preview() {
+        let block = ThinkingBlock::new("streaming body");
+        let mut c = ctx(DisplayMode::Collapsed, 40);
+        c.is_running = true;
+        let out = block.output(&c);
+        assert_eq!(
+            out.lines.len(),
+            1,
+            "running thinking must not add a static collapsed body"
+        );
     }
 
     #[test]

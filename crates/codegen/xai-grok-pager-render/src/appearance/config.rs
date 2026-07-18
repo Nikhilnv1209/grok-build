@@ -559,6 +559,9 @@ pub struct ThinkingConfig {
     /// (matching tool block title style), and respects muted_collapsed when collapsed.
     /// When false (default), the header is always dim/muted gray.
     pub header_bright: bool,
+    /// Number of thought-text lines to preview when collapsed (0 = header only).
+    /// Mirrors tool-call collapsed previews. Default 3.
+    pub collapsed_preview_lines: u16,
 }
 
 impl Default for ThinkingConfig {
@@ -571,6 +574,7 @@ impl Default for ThinkingConfig {
             animate: true,
             header: true,
             header_bright: false,
+            collapsed_preview_lines: 3,
         }
     }
 }
@@ -1238,6 +1242,9 @@ pub struct RawThinkingConfig {
     /// When true, header uses brighter styling in non-collapsed modes (like tool titles).
     /// Respects muted_collapsed when collapsed. When false, header is always dim gray.
     pub header_bright: bool,
+    /// Number of thought-text lines to preview when collapsed.
+    /// 0 disables the preview (header-only, the legacy behavior). Default 3.
+    pub collapsed_preview_lines: u16,
 }
 
 impl Default for RawThinkingConfig {
@@ -1250,6 +1257,7 @@ impl Default for RawThinkingConfig {
             animate: true,
             header: true,
             header_bright: false,
+            collapsed_preview_lines: 3,
         }
     }
 }
@@ -1623,6 +1631,7 @@ impl From<RawThinkingConfig> for ThinkingConfig {
             animate: raw.animate,
             header: raw.header,
             header_bright: raw.header_bright,
+            collapsed_preview_lines: raw.collapsed_preview_lines,
         }
     }
 }
