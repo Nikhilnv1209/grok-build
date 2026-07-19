@@ -1081,6 +1081,7 @@ pub(crate) async fn handle_subagent_request(
             xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_string(),
             xai_chat_state::CompactionMode::Summary,
             ctx.resolve_compaction_verbatim_input(),
+            ctx.resolve_compaction_tool_choice(),
             false,
             None,
             None,
@@ -1156,7 +1157,7 @@ pub(crate) async fn handle_subagent_request(
             ctx.client_hooks.clone(),
             None,
             std::collections::HashMap::new(),
-            ctx.persona_io_summaries.clone(),
+            Vec::new(),
             xai_grok_agent::prompt::context::PromptAudience::Subagent,
             effective_runtime.role_prompt.clone(),
             None,
@@ -1304,6 +1305,7 @@ pub(crate) async fn handle_subagent_request(
             traceparent: xai_file_utils::trace_context::current_traceparent(),
             json_schema: None,
             send_now: false,
+            admission: None,
             respond_to: prompt_tx,
             persist_ack: None,
             parsed_prompt_tx: None,
@@ -1765,7 +1767,8 @@ pub(crate) async fn handle_subagent_request(
             }
         }
     }
-    update_subagent_meta_completed(&subagent_meta_dir, &result, &gcs_upload_ctx);
+    let persisted_output_dir = persist_subagent_output(&subagent_meta_dir, &result);
+    persist_subagent_completion(&subagent_meta_dir, &result, &gcs_upload_ctx);
     let final_status = result.status().to_string();
     let snapshot_dispose_enabled = ctx.resolve_subagent_worktree_snapshot_enabled();
     let telemetry_tokens = if result.tool_calls > 0 || result.success {
@@ -1994,6 +1997,7 @@ pub(crate) async fn handle_subagent_request(
             request.description.clone(),
             request.subagent_type.clone(),
             result.clone(),
+            persisted_output_dir,
         );
     if let Some(snapshot_ref) = disposed_snapshot_ref {
         coordinator.borrow_mut().set_completed_snapshot_ref(&request.id, snapshot_ref);
@@ -2003,7 +2007,7 @@ pub(crate) async fn handle_subagent_request(
             &request.id,
             &result,
             &request,
-            &ctx.auto_wake_delivered,
+            &ctx.task_completion_reservations,
             ctx.parent_cmd_tx.as_ref(),
             &ctx.task_output_tool_name,
             &ctx.synthetic_trace_tx,
