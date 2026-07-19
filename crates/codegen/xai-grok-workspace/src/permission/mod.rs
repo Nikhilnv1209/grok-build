@@ -1,3 +1,4 @@
+pub mod arity;
 pub mod auto_mode;
 pub mod claude_settings;
 mod hub_permission;

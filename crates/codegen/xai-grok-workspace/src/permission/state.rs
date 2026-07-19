@@ -24,6 +24,13 @@ pub struct PermissionState {
     /// "always allow" to every tool. Lookup is "tool name starts with
     /// `<prefix>__`".
     pub allowed_mcp_servers: HashSet<String>,
+    /// Bash command prefixes the user has approved **for this session only**
+    /// (not persisted to disk). Mirrors `allow_edits_for_session` for bash:
+    /// same `matches_whitelist_prefix` word-boundary matching as
+    /// [`allowed_bash_commands`](Self::allowed_bash_commands), but cleared on
+    /// session reload.
+    #[serde(skip)]
+    pub session_allowed_bash_commands: HashSet<String>,
 }
 
 fn state_dir_for_cwd(cwd: &AbsPathBuf) -> std::path::PathBuf {

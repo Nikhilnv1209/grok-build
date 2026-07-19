@@ -408,6 +408,84 @@ pub fn primary_command_from_script(script: &str) -> Option<BashCommandHighlights
     })
 }
 
+/// Extract the primary command's **tokens** from a bash script — the robust
+/// counterpart to [`primary_command_from_script`] for callers that only need
+/// the command words (not byte spans) and must not fail on complex quoting.
+///
+/// Unlike [`primary_command_from_script`] (which delegates to
+/// [`try_parse_word_only_commands_sequence`] and rejects any command
+/// containing interpolated strings, expansions, or other non-trivial
+/// constructs), this function walks the tree-sitter AST directly and
+/// collects the raw text of every `command_name`, `word`, `string`,
+/// `raw_string`, and `concatenation` child — exactly like opencode's
+/// `parts(node)` + `commands(node)` approach. A `"%{http_code}"` argument
+/// is taken as-is rather than rejected for having `string_expansion`
+/// children.
+///
+/// Returns the first non-setup command's tokens, or `None` if tree-sitter
+/// cannot parse the script at all.
+pub fn primary_command_tokens(script: &str) -> Option<Vec<String>> {
+    let tree = try_parse_shell(script)?;
+    let root = tree.root_node();
+    let src = script.as_bytes();
+
+    // Collect every `command` node in source order (opencode: descendantsOfType("command")).
+    let mut command_nodes: Vec<Node> = Vec::new();
+    collect_command_nodes(root, &mut command_nodes);
+
+    for cmd_node in command_nodes {
+        let tokens = extract_command_tokens(cmd_node, src);
+        if tokens.is_empty() || is_setup_command(&tokens) {
+            continue;
+        }
+        return Some(tokens);
+    }
+    None
+}
+
+/// Recursively collect all `command` nodes under `node` (depth-first, source order).
+fn collect_command_nodes<'a>(node: Node<'a>, out: &mut Vec<Node<'a>>) {
+    if node.kind() == "command" {
+        out.push(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_command_nodes(child, out);
+    }
+}
+
+/// Extract token text from a `command` node's named children.
+///
+/// Mirrors opencode's `parts()`: accept `command_name`, `word`, `number`,
+/// `string`, `raw_string`, and `concatenation` — taking the raw text
+/// without inspecting string internals. `variable_assignment` is skipped
+/// (env prefix). Everything else (redirects, substitutions as standalone
+/// nodes, etc.) is also skipped rather than causing a rejection.
+fn extract_command_tokens(cmd: Node, src: &[u8]) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut cursor = cmd.walk();
+    for child in cmd.named_children(&mut cursor) {
+        match child.kind() {
+            "variable_assignment" => continue,
+            "command_name" => {
+                // The first named child is usually a `word` — take its text.
+                if let Some(word_node) = child.named_child(0)
+                    && let Ok(text) = word_node.utf8_text(src)
+                {
+                    tokens.push(text.to_owned());
+                }
+            }
+            "word" | "number" | "string" | "raw_string" | "concatenation" => {
+                if let Ok(text) = child.utf8_text(src) {
+                    tokens.push(text.to_owned());
+                }
+            }
+            _ => {} // skip redirects, etc. — do NOT reject
+        }
+    }
+    tokens
+}
+
 /// Parse all commands from a bash script using tree-sitter.
 ///
 /// Returns `Some(Vec<PlainCommand>)` with every command in source order
