@@ -1303,24 +1303,22 @@ impl BlockContent for EditToolCallBlock {
     }
 
     fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle> {
-        // Edit blocks: use config accent color if set, otherwise no accent.
-        // Note: errors no longer show red accent — they show red bullet instead.
-        ctx.appearance
-            .scrollback
-            .blocks
-            .edit
-            .accent
-            .map(AccentStyle::static_color)
+        // Prefer the shared status accent so edit matches every other tool's
+        // left border (red/running/green). Fall back to the optional
+        // edit.accent config only when no status color would apply — which
+        // never happens with tool_status_accent, so config accent is used as
+        // an override when set for successful finished edits.
+        if self.error.is_some() || ctx.is_running {
+            return super::tool_status_accent(self.error.is_some(), ctx.is_running);
+        }
+        if let Some(color) = ctx.appearance.scrollback.blocks.edit.accent {
+            return Some(AccentStyle::static_color(color));
+        }
+        super::tool_status_accent(false, false)
     }
 
-    fn bullet(&self, _ctx: &BlockContext) -> Option<AccentStyle> {
-        // Failed edit: red bullet. Successful: default (gray/primary).
-        if self.error.is_some() {
-            let theme = Theme::current();
-            Some(AccentStyle::static_color(theme.accent_error))
-        } else {
-            None
-        }
+    fn bullet(&self, ctx: &BlockContext) -> Option<AccentStyle> {
+        super::tool_status_accent(self.error.is_some(), ctx.is_running)
     }
 
     fn accent_background(&self, ctx: &BlockContext) -> bool {

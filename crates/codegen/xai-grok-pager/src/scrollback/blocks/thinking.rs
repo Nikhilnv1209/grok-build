@@ -226,13 +226,15 @@ impl ThinkingBlock {
                 Some(text.trim_end().to_string())
             };
             let theme = Theme::current();
+            // Muted body matches the faded look of truncated/streaming
+            // thought content (bg_blend on rendered markdown).
             append_collapsed_body(
                 &mut lines,
                 &theme,
                 None, // thinking has no error channel
                 preview.as_deref(),
                 max,
-                PreviewStyle::Plain,
+                PreviewStyle::Muted,
             );
         }
 
@@ -566,6 +568,34 @@ mod tests {
         assert!(
             !plain.contains("line five"),
             "lines beyond the preview budget must be hidden, got: {plain}"
+        );
+    }
+
+    #[test]
+    fn collapsed_thinking_body_uses_muted_style() {
+        let theme = Theme::current();
+        let muted_fg = theme.muted().fg;
+        let block = ThinkingBlock::new("dim this thought line");
+        let out = block.output(&ctx(DisplayMode::Collapsed, 80));
+        let body = out
+            .lines
+            .iter()
+            .find(|l| {
+                l.content
+                    .spans
+                    .iter()
+                    .any(|s| s.content.contains("dim this"))
+            })
+            .expect("body preview line with thought text");
+        let thought_span = body
+            .content
+            .spans
+            .iter()
+            .find(|s| s.content.contains("dim this"))
+            .expect("span with thought text");
+        assert_eq!(
+            thought_span.style.fg, muted_fg,
+            "collapsed thinking body must be muted like streaming thought text"
         );
     }
 

@@ -705,14 +705,17 @@ impl BlockContent for ExecuteToolCallBlock {
         if !ctx.appearance.scrollback.blocks.execute.accent_enabled {
             return None;
         }
-        let theme = Theme::current();
+        // Same status rule as other tools; running uses the execute-specific
+        // running accent color from config when set.
         if self.error.is_some() {
+            let theme = Theme::current();
             Some(AccentStyle::static_color(theme.accent_error))
         } else if ctx.is_running {
             Some(AccentStyle::animated(
                 ctx.appearance.scrollback.blocks.execute.running_accent,
             ))
         } else {
+            let theme = Theme::current();
             Some(AccentStyle::static_color(theme.accent_success))
         }
     }

@@ -307,34 +307,11 @@ impl BlockContent for OtherToolCallBlock {
     }
 
     fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle> {
-        let theme = Theme::current();
-        // Failed tools keep the red accent even when collapsed so the failure
-        // is visible without expanding.
-        if self.error.is_some() {
-            return Some(AccentStyle::static_color(theme.accent_error));
-        }
-        // No accent when collapsed — keeps accents reserved for Execute blocks
-        // in dense groups.
-        if ctx.mode == DisplayMode::Collapsed {
-            return None;
-        }
-        if ctx.is_running {
-            Some(AccentStyle::animated(theme.accent_running))
-        } else {
-            Some(AccentStyle::static_color(theme.accent_tool))
-        }
+        super::tool_status_accent(self.error.is_some(), ctx.is_running)
     }
 
     fn bullet(&self, ctx: &BlockContext) -> Option<AccentStyle> {
-        // Failed: red bullet. Running/expanded: accent color. Collapsed: default.
-        if self.error.is_some() {
-            let theme = Theme::current();
-            Some(AccentStyle::static_color(theme.accent_error))
-        } else if ctx.mode == DisplayMode::Collapsed {
-            None // default gray
-        } else {
-            self.accent(ctx) // inherit from accent when expanded/running
-        }
+        super::tool_status_accent(self.error.is_some(), ctx.is_running)
     }
 
     fn has_vpad(&self, _ctx: &BlockContext) -> bool {

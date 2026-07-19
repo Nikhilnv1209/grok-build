@@ -202,24 +202,12 @@ impl BlockContent for ListDirToolCallBlock {
         }
     }
 
-    fn accent(&self, _ctx: &BlockContext) -> Option<AccentStyle> {
-        // Failed list_dir keeps a red accent bar so the failure is obvious
-        // without expanding.
-        if self.error.is_some() {
-            let theme = Theme::current();
-            Some(AccentStyle::static_color(theme.accent_error))
-        } else {
-            None
-        }
+    fn accent(&self, ctx: &BlockContext) -> Option<AccentStyle> {
+        super::tool_status_accent(self.error.is_some(), ctx.is_running)
     }
 
-    fn bullet(&self, _ctx: &BlockContext) -> Option<AccentStyle> {
-        if self.error.is_some() {
-            let theme = Theme::current();
-            Some(AccentStyle::static_color(theme.accent_error))
-        } else {
-            None
-        }
+    fn bullet(&self, ctx: &BlockContext) -> Option<AccentStyle> {
+        super::tool_status_accent(self.error.is_some(), ctx.is_running)
     }
 
     fn has_vpad(&self, _ctx: &BlockContext) -> bool {

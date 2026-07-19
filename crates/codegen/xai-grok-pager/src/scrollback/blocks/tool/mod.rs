@@ -54,8 +54,29 @@ pub(crate) const COLLAPSED_ERROR_PREVIEW_LINES: usize = 2;
 pub(crate) enum PreviewStyle {
     /// Plain primary text (file content, search results, MCP JSON, etc.).
     Plain,
+    /// Dimmed/muted text — used for thinking so the collapsed body matches
+    /// the faded look of truncated/streaming thought content.
+    Muted,
     /// Terminal-native ANSI/SGR highlighting (execute / list_dir stdout).
     Terminal,
+}
+
+/// Standard left accent bar for tool-call blocks.
+///
+/// Always returns a color so every tool type draws a consistent left border:
+/// red on failure, animated while running, green on success. Callers that
+/// gate on config (`execute.accent_enabled`) should check that first.
+///
+/// `has_error` mirrors `error.is_some()` on tool blocks (success = no error).
+pub(crate) fn tool_status_accent(has_error: bool, is_running: bool) -> Option<AccentStyle> {
+    let theme = Theme::current();
+    if has_error {
+        Some(AccentStyle::static_color(theme.accent_error))
+    } else if is_running {
+        Some(AccentStyle::animated(theme.accent_running))
+    } else {
+        Some(AccentStyle::static_color(theme.accent_success))
+    }
 }
 
 /// Append the collapsed body (error reason + output preview + footer) to
@@ -197,14 +218,25 @@ pub(crate) fn render_output_preview(
 
     match style {
         PreviewStyle::Terminal => render_terminal_preview(output, theme, max_lines),
-        PreviewStyle::Plain => render_plain_preview(output, theme, max_lines),
+        PreviewStyle::Plain => render_plain_preview(output, theme, max_lines, false),
+        PreviewStyle::Muted => render_plain_preview(output, theme, max_lines, true),
     }
 }
 
-fn render_plain_preview(output: &str, theme: &Theme, max_lines: usize) -> (Vec<BlockLine>, usize) {
+fn render_plain_preview(
+    output: &str,
+    theme: &Theme,
+    max_lines: usize,
+    muted: bool,
+) -> (Vec<BlockLine>, usize) {
     let content_lines: Vec<&str> = output.lines().collect();
     let total = content_lines.len();
     let indent = "  ";
+    let text_style = if muted {
+        theme.muted()
+    } else {
+        theme.primary()
+    };
     let mut lines = Vec::with_capacity(total.min(max_lines));
     for (i, line) in content_lines.iter().enumerate() {
         if i >= max_lines {
@@ -217,7 +249,7 @@ fn render_plain_preview(output: &str, theme: &Theme, max_lines: usize) -> (Vec<B
             format!("{indent}{line}")
         };
         lines.push(
-            BlockLine::from(Line::from(Span::styled(text, theme.primary())))
+            BlockLine::from(Line::from(Span::styled(text, text_style)))
                 .with_panel_background(theme.bg_dark),
         );
     }
