@@ -1758,7 +1758,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
                 name: None,
                 tool_calls,
                 tool_call_id: None,
-                model_id: a.model_id,
+                model_id: None,
                 reasoning_content: None,
             }
         }
@@ -4081,7 +4081,7 @@ mod tests {
 
         assert_eq!(chat_msg.text_content(), "Let me help you with that.");
         assert_eq!(chat_msg.tool_calls.len(), 1);
-        assert_eq!(chat_msg.model_id, Some("grok-3".to_string()));
+        assert_eq!(chat_msg.model_id, None);
     }
 
     // ============================================================================
