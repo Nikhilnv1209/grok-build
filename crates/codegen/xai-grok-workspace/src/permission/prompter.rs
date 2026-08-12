@@ -3,9 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::permission::{
-    bash_command_splitting::{
-        BashCommandHighlights, primary_command_from_script, primary_command_tokens,
-    },
+    bash_command_splitting::{BashCommandHighlights, primary_command_from_script},
     types::{AccessKind, ClientType},
 };
 use agent_client_protocol::{self as acp, Client as _};
@@ -293,12 +291,6 @@ pub enum PromptOutcome {
     /// Matches the UX of "Yes, allow all edits during this session".
     AllowEditsForSession,
     AllowAlwaysBashCommand(String),
-    /// Session-scoped: allow this bash command prefix for the remainder of
-    /// the session only. Not persisted to disk. Mirrors `AllowEditsForSession`
-    /// for bash — the prefix is extracted via the arity table so similar
-    /// commands (e.g. `git checkout dev`) match without re-prompting, but
-    /// too-broad prefixes (e.g. bare `git`) are avoided.
-    AllowBashPatternForSession(String),
     /// A free-form glob pattern authored in the "Always allow" editor. Matched
     /// with glob semantics (unlike the literal-prefix [`Self::AllowAlwaysBashCommand`]).
     AllowAlwaysBashGlob(String),
@@ -332,7 +324,6 @@ crate::permission::wire_enum! {
         AllowEditsForSession => "allow_edits_for_session",
         AllowAlwaysBash => "allow_always_bash",
         AllowAlwaysBashGlob => "allow_always_bash_glob",
-        AllowBashPatternForSession => "allow_bash_pattern_for_session",
         AllowAlwaysDomain => "allow_always_domain",
         AllowAlwaysMcpTool => "allow_always_mcp_tool",
         AllowAlwaysMcpServer => "allow_always_mcp_server",
@@ -356,7 +347,6 @@ impl PromptOutcome {
             Self::AllowEditsForSession => PromptOutcomeKind::AllowEditsForSession,
             Self::AllowAlwaysBashCommand(_) => PromptOutcomeKind::AllowAlwaysBash,
             Self::AllowAlwaysBashGlob(_) => PromptOutcomeKind::AllowAlwaysBashGlob,
-            Self::AllowBashPatternForSession(_) => PromptOutcomeKind::AllowBashPatternForSession,
             Self::AllowAlwaysDomain(_) => PromptOutcomeKind::AllowAlwaysDomain,
             Self::AllowAlwaysMcpTool(_) => PromptOutcomeKind::AllowAlwaysMcpTool,
             Self::AllowAlwaysMcpServer(_) => PromptOutcomeKind::AllowAlwaysMcpServer,
@@ -392,9 +382,8 @@ pub struct AcpPrompter {
 }
 
 /// Per-tool always-allow/always-reject option ids stripped when the gate is off.
-/// Session-scoped options always remain (like edit's `allow-edits-session`):
-/// `allow-once`, `reject-once`, `enable-always-approve`, `allow-edits-session`,
-/// and `allow-session-command`.
+/// `allow-once`, `reject-once`, `enable-always-approve`, and `allow-edits-session`
+/// always remain.
 const REMEMBER_TOOL_APPROVALS_GATED_IDS: &[&str] = &[
     "allow-always-command",
     "reject-always-command",
@@ -679,39 +668,6 @@ impl AcpPrompter {
                             );
                             bash_commands.insert(id, option);
                         }
-                        // Session-scoped allow (not persisted). Sits between the
-                        // persistent allow and the one-off allow-once so the
-                        // progression reads: always → this session → just once.
-                        //
-                        // Unlike always-allow/reject-always, this option does
-                        // NOT carry `BashCommandPermission` meta and does NOT
-                        // participate in the ←/→ word-scope selector. The
-                        // scope is always the arity-defined command unit
-                        // (`touch`, `git checkout`, `npm run dev`, …), so
-                        // similar commands match without re-prompting while
-                        // distinct commands stay separate. The label is
-                        // static — the TUI's `dynamic_option_label` will not
-                        // rebuild it from `selected_words`.
-                        //
-                        // Uses `primary_command_tokens` (not
-                        // `primary_command_from_script`) so it works even on
-                        // complex commands that tree-sitter parses but the
-                        // strict word-only filter rejects (e.g. quoted
-                        // strings with expansions like `"%{http_code}"`).
-                        if let Some(tokens) = primary_command_tokens(bash_command) {
-                            let arity_prefix =
-                                crate::permission::arity::command_prefix_owned(&tokens);
-                            let label =
-                                format!("Allow for this session: {}", arity_prefix.join(" "));
-                            bash_commands.insert(
-                                acp::PermissionOptionId::new("allow-session-command"),
-                                acp::PermissionOption::new(
-                                    "allow-session-command",
-                                    label,
-                                    acp::PermissionOptionKind::AllowAlways,
-                                ),
-                            );
-                        }
                         // Then the standard allow/reject options
                         bash_commands.extend(self.bash_options.clone());
                         // Trailing persistent deny; ordering rationale above.
@@ -950,7 +906,6 @@ fn permission_decision_for_outcome(outcome: &PromptOutcome) -> PermissionDecisio
         | PromptOutcome::AllowAlways
         | PromptOutcome::AllowEditsForSession
         | PromptOutcome::AllowAlwaysBashCommand(_)
-        | PromptOutcome::AllowBashPatternForSession(_)
         | PromptOutcome::AllowAlwaysBashGlob(_)
         | PromptOutcome::AllowAlwaysDomain(_)
         | PromptOutcome::AllowAlwaysMcpTool(_)
@@ -1054,30 +1009,6 @@ fn map_selected_outcome(
                     } else {
                         PromptOutcome::AllowAlways
                     }
-                } else if option_id.to_string() == "allow-session-command" {
-                    // Session-scoped bash pattern allow (not persisted).
-                    //
-                    // The stored prefix is ALWAYS the arity-defined command
-                    // unit, computed from the full command — never the
-                    // ←/→ word selection (which is shared with always-allow
-                    // and bakes args into the prefix). This guarantees:
-                    //   `touch /tmp/a`  → stores `touch`      → matches `touch /tmp/b`
-                    //   `git checkout main` → stores `git checkout` → matches `git checkout dev`
-                    //   `npm run dev`  → stores `npm run dev` → does NOT match `npm run build`
-                    //
-                    // Uses `primary_command_tokens` (not `primary_command_from_script`)
-                    // so it works on complex commands the strict word-only
-                    // filter rejects.
-                    if let AccessKind::Bash(cmd) = access {
-                        if let Some(tokens) = primary_command_tokens(cmd) {
-                            let prefix = crate::permission::arity::command_prefix_owned(&tokens);
-                            PromptOutcome::AllowBashPatternForSession(prefix.join(" "))
-                        } else {
-                            PromptOutcome::AllowOnce
-                        }
-                    } else {
-                        PromptOutcome::AllowOnce
-                    }
                 } else if option_id.0.as_ref() == ALLOW_EDITS_SESSION_OPTION_ID {
                     // The edit prompt's "Yes, allow all edits during this session".
                     // Treat as session-scoped only (in-memory). Do not persist.
@@ -1175,7 +1106,6 @@ mod tests {
                 PromptOutcome::RejectAlwaysBashCommand(String::new()),
                 "reject_always_bash",
             ),
-            (PromptOutcome::AllowBashPatternForSession("touch".into()), "allow_bash_pattern_for_session"),
             (PromptOutcome::Cancelled, "cancelled"),
             (PromptOutcome::FollowupMessage(String::new()), "followup"),
             (PromptOutcome::Error(String::new()), "error"),
@@ -1224,36 +1154,11 @@ mod tests {
             !has_option(&opts, "reject-always-command"),
             "gate off must strip reject-always-command"
         );
-        assert!(
-            has_option(&opts, "allow-session-command"),
-            "session-scoped bash allow must survive the gate (like allow-edits-session)"
-        );
         assert!(has_option(&opts, "allow-once"), "Yes must remain");
         assert!(has_option(&opts, "reject-once"), "No must remain");
         assert!(
             has_option(&opts, ENABLE_ALWAYS_APPROVE_OPTION_ID),
             "global always-approve must remain"
-        );
-    }
-
-    #[test]
-    fn gate_off_keeps_bash_session_allow() {
-        // Mirrors gate_off_keeps_edit_session_allow: session grants are not
-        // governed by the remember-tool-approvals gate.
-        let p = prompter_with_gate(ClientType::GrokPager, false);
-        let access = AccessKind::Bash("git checkout main".to_owned());
-        let opts = p.build_options(&access);
-        assert!(
-            has_option(&opts, "allow-session-command"),
-            "bash session allow must survive the gate"
-        );
-        let opt = opts
-            .get(&acp::PermissionOptionId::new("allow-session-command"))
-            .expect("option present");
-        assert!(
-            opt.name.contains("session") || opt.name.contains("Allow for this session"),
-            "label should mention session: got {:?}",
-            opt.name
         );
     }
 
@@ -1363,140 +1268,6 @@ mod tests {
                 PromptOutcome::RejectAlwaysBashCommand(ref w) if w == "cargo test --workspace"
             ),
             "no meta must fall back to the primary command, got {outcome:?}"
-        );
-    }
-
-    #[test]
-    fn bash_session_allow_stores_arity_command_unit() {
-        // The stored prefix is always the arity-defined command unit,
-        // computed from the full command — NOT the ←/→ word selection.
-        // `touch /tmp/a` → stores `touch`, so `touch /tmp/b` matches.
-        let p = prompter(ClientType::GrokPager);
-        let access = AccessKind::Bash("touch /tmp/grok-perm-test".to_owned());
-        let opts = p.build_options(&access);
-        // Even if the dispatch sends a 2-word selection (from the shared
-        // ←/→ selector used by always-allow), session-allow ignores it
-        // and stores just the command unit.
-        let meta = serde_json::to_value(BashCommandSelectedTerms {
-            command_parts: vec!["touch".to_owned(), "/tmp/grok-perm-test".to_owned()],
-        })
-        .unwrap()
-        .as_object()
-        .cloned()
-        .unwrap();
-        let outcome = outcome_for(&opts, "allow-session-command", Some(meta), &access);
-        assert!(
-            matches!(
-                outcome,
-                PromptOutcome::AllowBashPatternForSession(ref w) if w == "touch"
-            ),
-            "session allow must store the arity command unit `touch`, got {outcome:?}"
-        );
-    }
-
-    #[test]
-    fn bash_session_allow_stores_multi_token_command_unit() {
-        // `git checkout main` → arity 2 → stores `git checkout`, so
-        // `git checkout dev` matches without re-prompting.
-        let p = prompter(ClientType::GrokPager);
-        let access = AccessKind::Bash("git checkout main".to_owned());
-        let opts = p.build_options(&access);
-        let outcome = outcome_for(&opts, "allow-session-command", None, &access);
-        assert!(
-            matches!(
-                outcome,
-                PromptOutcome::AllowBashPatternForSession(ref w) if w == "git checkout"
-            ),
-            "session allow must store `git checkout`, got {outcome:?}"
-        );
-    }
-
-    #[test]
-    fn bash_session_allow_stores_three_token_command_unit() {
-        // `npm run dev` → arity 3 → stores `npm run dev`, so
-        // `npm run build` does NOT match (different command unit).
-        let p = prompter(ClientType::GrokPager);
-        let access = AccessKind::Bash("npm run dev".to_owned());
-        let opts = p.build_options(&access);
-        let outcome = outcome_for(&opts, "allow-session-command", None, &access);
-        assert!(
-            matches!(
-                outcome,
-                PromptOutcome::AllowBashPatternForSession(ref w) if w == "npm run dev"
-            ),
-            "session allow must store `npm run dev`, got {outcome:?}"
-        );
-    }
-
-    #[test]
-    fn bash_session_allow_label_shows_command_unit() {
-        // The option label must show the arity command unit (not the full
-        // command), so the user sees exactly what they're allowing.
-        let p = prompter(ClientType::GrokPager);
-        let access = AccessKind::Bash("touch /tmp/grok-perm-test".to_owned());
-        let opts = p.build_options(&access);
-        let opt = opts
-            .get(&acp::PermissionOptionId::new("allow-session-command"))
-            .expect("session-allow option present");
-        assert!(
-            opt.name == "Allow for this session: touch",
-            "label must show the command unit, got {:?}",
-            opt.name
-        );
-        // No BashCommandPermission meta → TUI won't rebuild from selected_words.
-        assert!(
-            opt.meta.is_none(),
-            "session-allow must not carry meta (no word-scope rebuild)"
-        );
-    }
-
-    #[test]
-    fn bash_session_allow_works_on_complex_commands() {
-        // Commands with quoted strings containing expansions (e.g.
-        // `"%{http_code}"`) cause `primary_command_from_script` to fail
-        // (the strict word-only filter rejects them). The session-allow
-        // must still be offered — it uses `primary_command_tokens` which
-        // extracts raw text without inspecting string internals.
-        let p = prompter(ClientType::GrokPager);
-        let access = AccessKind::Bash(
-            "curl -s -o /dev/null -w \"%{http_code}\" https://www.google.com".to_owned(),
-        );
-        let opts = p.build_options(&access);
-        let opt = opts
-            .get(&acp::PermissionOptionId::new("allow-session-command"))
-            .expect("session-allow option must be present for complex commands");
-        assert!(
-            opt.name == "Allow for this session: curl",
-            "label must show `curl`, got {:?}",
-            opt.name
-        );
-        // Outcome must store `curl` (arity 1), not the full command.
-        let outcome = outcome_for(&opts, "allow-session-command", None, &access);
-        assert!(
-            matches!(
-                outcome,
-                PromptOutcome::AllowBashPatternForSession(ref w) if w == "curl"
-            ),
-            "session allow must store `curl`, got {outcome:?}"
-        );
-    }
-
-    #[test]
-    fn bash_session_allow_works_on_chained_commands() {
-        // Chained commands with `&&` — the first non-setup command is
-        // `curl`, which must be the stored prefix.
-        let p = prompter(ClientType::GrokPager);
-        let access = AccessKind::Bash(
-            "curl -s https://example.com && echo done && curl -s https://other.com".to_owned(),
-        );
-        let opts = p.build_options(&access);
-        let opt = opts
-            .get(&acp::PermissionOptionId::new("allow-session-command"))
-            .expect("session-allow option must be present for chained commands");
-        assert!(
-            opt.name == "Allow for this session: curl",
-            "label must show `curl`, got {:?}",
-            opt.name
         );
     }
 

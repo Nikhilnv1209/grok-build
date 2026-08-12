@@ -281,7 +281,6 @@ pub fn prompt_outcome_allows(outcome: &PromptOutcome) -> bool {
             | PromptOutcome::AllowAlways
             | PromptOutcome::AllowEditsForSession
             | PromptOutcome::AllowAlwaysBashCommand(_)
-            | PromptOutcome::AllowBashPatternForSession(_)
             | PromptOutcome::AllowAlwaysBashGlob(_)
             | PromptOutcome::AllowAlwaysDomain(_)
             | PromptOutcome::AllowAlwaysMcpTool(_)

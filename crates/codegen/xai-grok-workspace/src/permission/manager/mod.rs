@@ -616,10 +616,6 @@ fn evaluate_bash(cmd: &str, state: &PermissionState, honor_safe_lists: bool) -> 
             .iter()
             .any(|a| matches_whitelist_prefix(&s, a))
             || state
-                .session_allowed_bash_commands
-                .iter()
-                .any(|a| matches_whitelist_prefix(&s, a))
-            || state
                 .allowed_bash_globs
                 .iter()
                 .any(|g| matches_bash_glob(&s, g));
@@ -656,9 +652,6 @@ fn evaluate_bash(cmd: &str, state: &PermissionState, honor_safe_lists: bool) -> 
 
         // 3. Auto-allow conditions. Built-in safe lists count only when
         //    `honor_safe_lists` is set; an explicit user grant always counts.
-        //    Both persisted (`allowed_bash_commands`) and session-temporary
-        //    (`session_allowed_bash_commands`) grants use the same word-boundary
-        //    prefix match.
         let matched_safe = honor_safe_lists
             && (is_safe_command_words(words) || is_always_safe_command_words(words));
         if matched_grant || matched_safe {
@@ -2310,12 +2303,6 @@ fn spawn_permission_manager_with_pin(
                                     persist_state(&cwd, &state, client_id_ref).await;
                                     Decision::Allow
                                 }
-                                PromptOutcome::AllowBashPatternForSession(prefix) => {
-                                    // Session-scoped only (in-memory). Do NOT
-                                    // persist — mirrors AllowEditsForSession.
-                                    state.session_allowed_bash_commands.insert(prefix.clone());
-                                    Decision::Allow
-                                }
                                 PromptOutcome::AllowAlwaysDomain(_)
                                 | PromptOutcome::AllowAlwaysMcpTool(_)
                                 | PromptOutcome::AllowAlwaysMcpServer(_)
@@ -2384,10 +2371,6 @@ fn spawn_permission_manager_with_pin(
                                     // Not reachable for non-bash access; preserve the
                                     // legacy normalized `allow_always_bash` wire value.
                                     effective_kind = PromptOutcomeKind::AllowAlwaysBash;
-                                    Decision::Allow
-                                }
-                                PromptOutcome::AllowBashPatternForSession(_) => {
-                                    // Not reachable for non-bash access; defensive.
                                     Decision::Allow
                                 }
                                 PromptOutcome::AllowAlwaysDomain(domain) => {

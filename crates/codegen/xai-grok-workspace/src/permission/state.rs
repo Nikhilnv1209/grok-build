@@ -30,13 +30,6 @@ pub struct PermissionState {
     /// for which the user has granted "always allow" to every tool. Lookup
     /// validates and parses the complete qualified ID before matching.
     pub allowed_mcp_servers: HashSet<String>,
-    /// Bash command prefixes the user has approved **for this session only**
-    /// (not persisted to disk). Mirrors `allow_edits_for_session` for bash:
-    /// same `matches_whitelist_prefix` word-boundary matching as
-    /// [`allowed_bash_commands`](Self::allowed_bash_commands), but cleared on
-    /// session reload.
-    #[serde(skip)]
-    pub session_allowed_bash_commands: HashSet<String>,
     /// Version proving server-wide grants were minted from validated qualified IDs.
     /// Missing or malformed markers are legacy; future integer versions are preserved.
     #[serde(
@@ -72,7 +65,6 @@ impl Default for PermissionState {
             allowed_web_fetch_domains: HashSet::new(),
             allowed_mcp_tools: HashSet::new(),
             allowed_mcp_servers: HashSet::new(),
-            session_allowed_bash_commands: HashSet::new(),
             validated_mcp_server_grants_version: VALIDATED_MCP_SERVER_GRANTS_VERSION,
         }
     }

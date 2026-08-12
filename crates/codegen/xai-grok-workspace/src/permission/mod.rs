@@ -1,4 +1,3 @@
-pub mod arity;
 pub mod auto_mode;
 pub mod bash_command_splitting;
 pub mod claude_settings;
