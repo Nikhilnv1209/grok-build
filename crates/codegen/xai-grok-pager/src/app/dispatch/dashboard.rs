@@ -15,7 +15,7 @@ use super::session::load::dispatch_load_session;
 use super::session::load::focus_if_session_already_open;
 use super::session::modal::dispatch_sessions_confirm_close;
 use super::turn::dispatch_cancel_turn;
-use super::voice::voice_stop_on_submit;
+use super::voice::{merge_prompt_with_voice_interim, voice_stop_on_submit};
 use crate::app::actions::{Action, Effect};
 use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
@@ -50,10 +50,20 @@ pub(super) fn ensure_dashboard_state(app: &mut AppView) {
     let mut state = dashboard_state_from_persisted(app);
     state.gc_stale_refs(&dashboard_alive_fn(&app.agents));
     state.adopt_slash_mru(app.slash_mru.clone());
+    state.adopt_command_tags(app.command_tags.clone());
     state.set_screen_mode(app.screen_mode);
     state.set_recap_visible(app.session_recap_available);
     state.set_voice_visible(app.voice_mode_enabled);
     state.set_restricted_commands(&app.tier_restricted_commands);
+    let billing = app.usage_visible;
+    state
+        .dispatch
+        .slash_controller
+        .set_billing_surface_visible(billing);
+    state
+        .peek_reply
+        .slash_controller
+        .set_billing_surface_visible(billing);
     app.dashboard = Some(state);
 }
 
@@ -358,13 +368,8 @@ pub(super) fn dispatch_dashboard_attach(
                 }
                 return vec![];
             }
-            if let Some(agent) = app.agents.get_mut(&parent)
-                && agent.subagent_views.contains_key(&child_session_id)
-            {
-                // Mirror `open_subagent_fullscreen`: load the resume-deferred
-                // child transcript on demand so the dashboard shows full history.
-                crate::app::subagent::ensure_subagent_child_replayed(agent, &child_session_id);
-                agent.active_subagent = Some(child_session_id.clone());
+            if let Some(agent) = app.agents.get_mut(&parent) {
+                agent.open_subagent_fullscreen(child_session_id.clone());
             }
             let row_id = DashboardRowId::Subagent {
                 parent,
@@ -662,9 +667,7 @@ fn open_dashboard_worktree_dialog(
 /// Mirrors `dispatch_dashboard_dispatch`'s new-session arm with `attach=true`,
 /// minus the prompt enqueue.
 pub(super) fn dispatch_dashboard_create_new_agent_with_detail(app: &mut AppView) -> Vec<Effect> {
-    // Creating/switching consumes the dispatch surface — stop voice and drop the
-    // target so a late final can't refill the box after the view switch.
-    voice_stop_on_submit(app);
+    let _ = voice_stop_on_submit(app);
     // Worktree mode armed + git repo: open the label dialog (which spawns the
     // agent in a fresh worktree on confirm) instead of a plain session. The
     // button opens the detail view, so confirm attaches (`attach = true`).
@@ -1096,10 +1099,7 @@ pub(super) fn dispatch_dashboard_dispatch(
     text: String,
     attach: bool,
 ) -> Vec<Effect> {
-    // Enter is a submit attempt — stop voice and drop the target up front (as the
-    // agent path does), so even a rejected send (empty / over-cap) can't leave a
-    // hot mic or let a late final refill the box.
-    voice_stop_on_submit(app);
+    let text = merge_prompt_with_voice_interim(text, voice_stop_on_submit(app));
     // Paste-then-immediate-send: a Cmd+V image probe is still off-thread. Stash
     // this send and re-issue it once the probe completes so the image is never
     // dropped from the dispatched prompt's content blocks.
@@ -1279,20 +1279,23 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
     use crate::slash::command::{CommandExecCtx, CommandResult};
     use crate::slash::parse_invocation;
 
-    // Enter is a submit attempt — stop voice and drop the target up front.
-    voice_stop_on_submit(app);
+    let text = merge_prompt_with_voice_interim(text, voice_stop_on_submit(app));
     let trimmed = text.trim().to_string();
     if trimmed.is_empty() || !trimmed.starts_with('/') {
         return vec![];
     }
 
     let coding_data_sharing_opt_out_from_app = app.coding_data_retention_opt_out;
+    let coding_data_sharing_lock_from_app = app.coding_data_sharing_lock();
     let show_tips_from_app = app.show_tips;
     let auto_update_from_app = app.auto_update;
     let respect_manual_folds_from_app = app.appearance.scrollback.scroll.respect_manual_folds;
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
+    // Dashboard commands run before any session exists, so the startup seed is
+    // the only answer available here.
+    let scheduler_background_loops_seed = app.scheduler_background_loops_seed;
 
     // Build the execution context from app-wide state. The dashboard
     // is session-less, so `session_id` is `None`. Offered session-less
@@ -1377,6 +1380,7 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             session_id: None,
             bundle_state: &app.bundle_state,
             screen_mode: app.screen_mode,
+            billing_surface_visible: app.usage_visible,
             pager_state: crate::settings::PagerLocalSnapshot {
                 multiline_mode: dashboard_multiline,
                 yolo_mode: app.default_yolo,
@@ -1390,6 +1394,7 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
                     .map(|(id, info)| (info.name.clone(), id.clone()))
                     .collect(),
                 coding_data_sharing_opt_out: coding_data_sharing_opt_out_from_app,
+                coding_data_sharing_lock: coding_data_sharing_lock_from_app,
                 plan_mode_active: false,
                 show_tips: show_tips_from_app,
                 auto_update: auto_update_from_app,
@@ -1399,6 +1404,7 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
                 auto_mode_gate: auto_mode_gate_from_app,
                 ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
                 voice_stt_language: voice_stt_language_from_app,
+                scheduler_background_loops: scheduler_background_loops_seed,
             },
         };
         command.run(&mut ctx, invocation.args)
@@ -1504,6 +1510,13 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
                 d.error_toast = None;
             }
             dispatch(action, app)
+        }
+        CommandResult::Doctor(_) => {
+            if let Some(d) = app.dashboard.as_mut() {
+                d.dispatch.set_text("");
+                d.set_error_toast("Open a session to run /doctor.");
+            }
+            vec![]
         }
         CommandResult::QueueCommand(_)
         | CommandResult::InjectSkill { .. }
@@ -1667,9 +1680,7 @@ pub(super) fn dispatch_dashboard_peek_reply(
 ) -> Vec<Effect> {
     use crate::views::dashboard::DashboardRowId;
 
-    // Enter is a submit attempt — stop voice and drop the target up front so a
-    // rejected reply can't leave a hot mic or let a late final refill the box.
-    voice_stop_on_submit(app);
+    let text = merge_prompt_with_voice_interim(text, voice_stop_on_submit(app));
 
     // Paste-then-immediate-send: a Cmd+V image probe is still off-thread. Stash
     // this reply and re-issue it once the probe completes so the image is never

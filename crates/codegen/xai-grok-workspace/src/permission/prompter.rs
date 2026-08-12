@@ -574,6 +574,22 @@ impl AcpPrompter {
         }
     }
 
+    /// Request `_meta`: bash selection scope, or protected-edit description for Edit.
+    fn permission_request_meta(
+        &self,
+        access: &AccessKind,
+        protected_edit: Option<crate::permission::ProtectedEditReason>,
+    ) -> Option<acp::Meta> {
+        if let Some(bash) = self.bash_selection_meta(access) {
+            return Some(bash);
+        }
+        let reason = protected_edit?;
+        let payload = crate::permission::ProtectedEditPermission::from_reason(reason);
+        serde_json::to_value(payload)
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+    }
+
     /// Build the per-access-kind option map WITHOUT the
     /// "enable always-approve mode" prepend. Kept as a separate inner
     /// fn so `build_options` can wrap the result with one prepend call
@@ -761,6 +777,7 @@ impl AcpPrompter {
         &self,
         access: &AccessKind,
         tool_call_update: &acp::ToolCallUpdate,
+        protected_edit: Option<crate::permission::ProtectedEditReason>,
     ) -> PromptOutcome {
         let tool_name = tool_name_for_access(access);
         // events.jsonl: `PermissionRequested` at prompt-start. The `Instant`
@@ -795,7 +812,7 @@ impl AcpPrompter {
                     tool_call_update.clone(),
                     permission_options.values().cloned().collect(),
                 )
-                .meta(self.bash_selection_meta(access));
+                .meta(self.permission_request_meta(access, protected_edit));
                 match self.gateway.request_permission(req).await {
                     Ok(resp) => match resp.outcome {
                         acp::RequestPermissionOutcome::Cancelled => PromptOutcome::Cancelled,
@@ -1851,7 +1868,7 @@ mod tests {
             acp::ToolCallUpdateFields::default(),
         );
 
-        let outcome = prompter.request(&access, &tool_call_update).await;
+        let outcome = prompter.request(&access, &tool_call_update, None).await;
         assert!(
             matches!(outcome, PromptOutcome::Error(_)),
             "dropped gateway receiver should yield PromptOutcome::Error"
@@ -1901,7 +1918,7 @@ mod tests {
             acp::ToolCallId::new(Arc::from("tc-2")),
             acp::ToolCallUpdateFields::default(),
         );
-        let outcome = prompter.request(&access, &tool_call_update).await;
+        let outcome = prompter.request(&access, &tool_call_update, None).await;
         assert!(matches!(outcome, PromptOutcome::Error(_)));
     }
 }
