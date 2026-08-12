@@ -73,10 +73,11 @@ pub struct InspectReport {
     pub lsp_servers: Vec<LspServerEntry>,
     pub config_sources: ConfigSources,
     pub external_compat: ExternalCompatReport,
-    /// Warnings from `[model.*]` parsing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub model_override_warnings:
-        Vec<crate::agent::config_model_override_parse::ModelOverrideWarning>,
+    pub config_warnings: Vec<crate::agent::config_model_override_parse::ConfigWarning>,
+    /// Invalid or ignored `[mcp_servers.*]` entries.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_config_problems: Vec<crate::util::config::McpServerConfigProblem>,
 }
 
 #[derive(Debug, Serialize)]
@@ -350,7 +351,7 @@ async fn build_report(cwd: &Path) -> InspectReport {
     // Discover with all vendors ON so inspect shows the full set on disk.
     let (mut instructions, permissions, mut skills) = tokio::join!(
         list_instructions(cwd),
-        list_permissions(cwd),
+        list_permissions(cwd, project_trusted),
         list_skills(cwd, &plugin_registry, &skills_config),
     );
 
@@ -380,10 +381,11 @@ async fn build_report(cwd: &Path) -> InspectReport {
     }
     let lsp = list_lsp_servers(cwd, &discovered_plugins);
     let configs = list_config_sources(cwd);
-    let model_override_warnings = parsed_config
+    let config_warnings = parsed_config
         .as_ref()
-        .map(|c| c.model_override_warnings.clone())
+        .map(|c| c.config_warnings.clone())
         .unwrap_or_default();
+    let mcp_config_problems = crate::util::config::load_mcp_server_problems_with_project(cwd);
 
     InspectReport {
         grok_version: xai_grok_version::VERSION.to_string(),
@@ -405,7 +407,8 @@ async fn build_report(cwd: &Path) -> InspectReport {
         lsp_servers: lsp,
         config_sources: configs,
         external_compat,
-        model_override_warnings,
+        config_warnings,
+        mcp_config_problems,
     }
 }
 
@@ -522,7 +525,7 @@ async fn list_instructions(cwd: &Path) -> Vec<InstructionFile> {
     // have this limitation; rules need the same treatment in a follow-up.
     let extra_rule_prefixes: Vec<std::path::PathBuf> = extra_rule_dirs
         .iter()
-        .map(|d| crate::claude_import::expand_home(d))
+        .map(|d| crate::util::expand_home(d))
         .collect();
 
     configs
@@ -549,7 +552,7 @@ async fn list_instructions(cwd: &Path) -> Vec<InstructionFile> {
 
 /// Calls the production permission resolver (`resolve_permissions_with_provenance`)
 /// which handles both Grok TOML and vendor settings fallback in one codepath.
-async fn list_permissions(cwd: &Path) -> PermissionsReport {
+async fn list_permissions(cwd: &Path, project_trusted: bool) -> PermissionsReport {
     use xai_grok_workspace::permission::resolution;
 
     let ms = resolution::managed_settings();
@@ -604,7 +607,9 @@ async fn list_permissions(cwd: &Path) -> PermissionsReport {
         }
     }
 
-    let Some(resolved) = resolution::resolve_permissions_with_provenance(cwd).await else {
+    let Some(resolved) =
+        resolution::resolve_permissions_with_provenance(cwd, project_trusted).await
+    else {
         return PermissionsReport {
             sources: vec![],
             loaded: 0,
@@ -664,37 +669,43 @@ fn list_hooks(
     discovered_plugins: &[xai_grok_agent::plugins::DiscoveredPlugin],
 ) -> Vec<HookEntry> {
     let all_on = xai_grok_tools::types::compat::CompatConfig::default();
-    let source_paths = crate::util::hooks::discover_hook_source_paths(git_root, &all_on);
-    let (global_sources, project_sources) = source_paths.as_sources(project_trusted);
-
+    // Route through the same assembly as session startup so config-layer hooks
+    // (config.toml / managed_config.toml / requirements.toml) appear in `/hooks`
+    // status alongside file hooks, each carrying its provenance name prefix.
+    let config_layers = xai_grok_config::hook_config_layers();
     let (registry, _errors) =
-        xai_grok_hooks::discovery::load_hooks_from_sources(&global_sources, &project_sources);
-
-    let home_dir = dirs::home_dir();
-    let grok_home = xai_grok_config::grok_home();
+        crate::util::hooks::assemble_hooks(&config_layers, git_root, &all_on, project_trusted);
 
     let mut entries: Vec<HookEntry> = registry
         .all_hooks()
         .into_iter()
         .map(|h| {
-            let is_user_scope = h.source_dir.starts_with(&grok_home)
-                || home_dir.as_deref().is_some_and(|home| {
-                    h.source_dir.starts_with(home.join(".cursor"))
-                        || h.source_dir.starts_with(home.join(".claude"))
-                });
-            let source = if is_user_scope {
-                ConfigSource::User {
-                    path: h.source_dir.clone(),
-                }
-            } else {
-                ConfigSource::Project {
-                    path: h.source_dir.clone(),
-                }
+            // Classify via the shared `hook_origin` (typed provenance + file-tier
+            // name prefix), the same classifier telemetry uses, so admin/system
+            // hooks aren't mislabeled and the two surfaces can't diverge.
+            use xai_grok_hooks::config::HookOrigin as O;
+            // Config-layer hooks store the layer's directory in `source_dir`;
+            // rejoin the tier's filename so inspect shows the actual config file.
+            let config_file = |name: &str| h.source_dir.join(name);
+            let path = h.source_dir.clone();
+            let source = match xai_grok_hooks::config::hook_origin(h) {
+                O::SystemManaged | O::Managed => ConfigSource::Managed {
+                    path: Some(config_file(xai_grok_config::MANAGED_CONFIG_FILENAME)),
+                },
+                O::Requirements => ConfigSource::Managed {
+                    path: Some(config_file(xai_grok_config::REQUIREMENTS_FILENAME)),
+                },
+                O::UserConfig => ConfigSource::ConfigToml {
+                    path: config_file(xai_grok_config::USER_CONFIG_FILENAME),
+                },
+                O::ProjectFile => ConfigSource::Project { path },
+                // File/plugin/agent/unknown hooks are user-scoped for display.
+                O::UserFile | O::Plugin | O::Agent | O::Unknown => ConfigSource::User { path },
             };
             let vendor = derive_vendor(&h.source_dir.display().to_string()).map(String::from);
             HookEntry {
-                event: format!("{:?}", h.event),
-                hook_type: h.handler_type.clone(),
+                event: h.event.to_string(),
+                hook_type: h.handler_type.as_str().to_string(),
                 target: h
                     .command
                     .as_ref()
@@ -761,11 +772,10 @@ async fn list_skills(
     )
     .await;
 
-    let grok_home = crate::util::grok_home::grok_home();
     skills
         .into_iter()
         .map(|s| {
-            let source = skill_entry_source(&s, &grok_home);
+            let source = skill_entry_source(&s);
             let vendor = derive_vendor(&s.path).map(String::from);
             SkillEntry {
                 name: s.label().to_string(),
@@ -784,22 +794,8 @@ async fn list_skills(
 /// Resolve the inspect-facing source for a discovered skill.
 ///
 /// Prefers the discovery-stamped `config_source` (plugin skills,
-/// `[skills].paths` entries), then falls back to a scope mapping. One
-/// display-only fixup: bundled skills are extracted to
-/// `<grok_home>/skills/<name>/SKILL.md` and discovered as user skills, so a
-/// skill at exactly that path with a bundled name is re-labeled `Bundled`
-/// (`builtin::is_extracted_bundled_skill`) — a same-named skill anywhere else
-/// stays non-bundled. Runtime discovery scopes/precedence are untouched.
-///
-/// `Bundled`/`Server` sources are constructed only here, never by runtime
-/// discovery: deployed pagers parse `x.ai/skills/list` into a typed
-/// `ConfigSource` and reject unknown tags, so runtime stamping must wait
-/// until clients without these variants have aged out. Until then this
-/// mapping is the single owner of the scope→source translation.
-fn skill_entry_source(
-    s: &xai_grok_agent::prompt::skills::SkillInfo,
-    grok_home: &Path,
-) -> ConfigSource {
+/// `[skills].paths` entries), then falls back to the discovered scope.
+fn skill_entry_source(s: &xai_grok_agent::prompt::skills::SkillInfo) -> ConfigSource {
     use xai_grok_tools::implementations::skills::types::SkillScope;
 
     if let Some(source) = s.config_source.clone() {
@@ -808,13 +804,7 @@ fn skill_entry_source(
     let path = PathBuf::from(&s.path);
     match s.scope {
         SkillScope::Local | SkillScope::Repo => ConfigSource::Project { path },
-        SkillScope::User => {
-            if crate::builtin::is_extracted_bundled_skill(&s.name, &path, grok_home) {
-                ConfigSource::Bundled { path }
-            } else {
-                ConfigSource::User { path }
-            }
-        }
+        SkillScope::User => ConfigSource::User { path },
         SkillScope::Server => ConfigSource::Server { path },
         SkillScope::Bundled => ConfigSource::Bundled { path },
         SkillScope::Plugin => ConfigSource::Plugin {
@@ -1242,35 +1232,43 @@ fn disabled_compat_tags(
     }
 }
 
-/// Renders the "Model Overrides" section of the human report; empty when
-/// there are no warnings.
-fn render_model_override_warnings(
-    warnings: &[crate::agent::config_model_override_parse::ModelOverrideWarning],
+fn render_config_warnings(
+    warnings: &[crate::agent::config_model_override_parse::ConfigWarning],
 ) -> String {
     use std::fmt::Write as _;
 
     if warnings.is_empty() {
         return String::new();
     }
-    let mut out = String::from("\n  Model Overrides\n");
-    let _ = writeln!(
-        out,
-        "  {TREE} {} warning(s) (models with invalid fields kept in catalog)",
-        warnings.len()
-    );
+    let mut out = String::from("\n  Config Warnings\n");
+    let _ = writeln!(out, "  {TREE} {} warning(s)", warnings.len());
     for w in warnings {
-        let target = match w.model_key.as_deref() {
-            Some(key) => format!("[model.\"{key}\"]"),
-            None => "[model]".to_owned(),
+        let field = w.field().map(|f| format!(" {f}")).unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "    {TREE} [{}]{field} — {}",
+            w.target.label(),
+            w.reason
+        );
+    }
+    out
+}
+
+fn render_mcp_config_problems(problems: &[crate::util::config::McpServerConfigProblem]) -> String {
+    use crate::util::config::McpServerProblemSeverity;
+    use std::fmt::Write as _;
+
+    if problems.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n  MCP Config Problems\n");
+    let _ = writeln!(out, "  {TREE} {} problem(s)", problems.len());
+    for p in problems {
+        let severity = match p.severity {
+            McpServerProblemSeverity::Error => "error",
+            McpServerProblemSeverity::Warning => "warning",
         };
-        match w.field.as_deref() {
-            Some(field) => {
-                let _ = writeln!(out, "    {TREE} {target} {field} — {}", w.reason);
-            }
-            None => {
-                let _ = writeln!(out, "    {TREE} {target} — {}", w.reason);
-            }
-        }
+        let _ = writeln!(out, "    {TREE} [{severity}] {}", p.message);
     }
     out
 }
@@ -1545,10 +1543,8 @@ fn print_human(r: &InspectReport) {
         println!("  {TREE} Project: (none)");
     }
 
-    print!(
-        "{}",
-        render_model_override_warnings(&r.model_override_warnings)
-    );
+    print!("{}", render_config_warnings(&r.config_warnings));
+    print!("{}", render_mcp_config_problems(&r.mcp_config_problems));
 
     print!("{}", render_harness_compatibility(&r.external_compat));
 }
@@ -1845,7 +1841,7 @@ mod tests {
     /// Model-override warnings flow from an effective config through `Config`
     /// to the human renderer and the JSON report.
     #[test]
-    fn model_override_warnings_inspect_smoke() {
+    fn config_warnings_inspect_smoke() {
         let effective: toml::Value = toml::from_str(
             r#"
             [model."grok-4.5"]
@@ -1858,23 +1854,23 @@ mod tests {
         )
         .unwrap();
         let cfg = crate::agent::config::Config::new_from_toml_cfg(&effective).unwrap();
-        let warnings = cfg.model_override_warnings;
+        let warnings = cfg.config_warnings;
         assert!(
             warnings
                 .iter()
-                .any(|w| w.field.as_deref() == Some("send_compactions_remaining")),
+                .any(|w| w.field() == Some("send_compactions_remaining")),
             "duplicate alias should warn: {warnings:?}"
         );
         assert!(
             warnings
                 .iter()
-                .any(|w| w.field.as_deref() == Some("reasoning_effort")),
+                .any(|w| w.field() == Some("reasoning_effort")),
             "invalid enum should warn: {warnings:?}"
         );
         assert!(cfg.config_models.contains_key("grok-4.5"));
 
-        let human = render_model_override_warnings(&warnings);
-        assert!(human.contains("Model Overrides"), "{human}");
+        let human = render_config_warnings(&warnings);
+        assert!(human.contains("Config Warnings"), "{human}");
         assert!(
             human.contains("[model.\"grok-4.5\"] send_compactions_remaining"),
             "{human}"
@@ -1883,7 +1879,33 @@ mod tests {
             human.contains("[model.\"grok-4.5\"] reasoning_effort"),
             "{human}"
         );
-        assert_eq!(render_model_override_warnings(&[]), "");
+        // Auth-provider warnings render under their own table syntax.
+        let provider_warning =
+            crate::agent::config_model_override_parse::ConfigWarning::auth_provider(
+                "litellm",
+                Some("command"),
+                crate::agent::config_model_override_parse::ConfigWarningKind::InvalidValue,
+                "missing or empty command".to_owned(),
+            );
+        let human = render_config_warnings(&[provider_warning]);
+        assert!(
+            human.contains("[auth_provider.\"litellm\"] command"),
+            "{human}"
+        );
+        // A dotted provider name renders whole; the field splits off the
+        // right.
+        let dotted = crate::agent::config_model_override_parse::ConfigWarning::auth_provider(
+            "corp.gateway",
+            Some("token_ttl_secs"),
+            crate::agent::config_model_override_parse::ConfigWarningKind::InvalidValue,
+            "at or below the refresh margin".to_owned(),
+        );
+        let human = render_config_warnings(&[dotted]);
+        assert!(
+            human.contains("[auth_provider.\"corp.gateway\"] token_ttl_secs"),
+            "{human}"
+        );
+        assert_eq!(render_config_warnings(&[]), "");
 
         let json = serde_json::to_value(&warnings).unwrap();
         let alias_warning = json
@@ -1892,7 +1914,8 @@ mod tests {
             .iter()
             .find(|w| w["field"] == "send_compactions_remaining")
             .expect("alias warning present in JSON");
-        assert_eq!(alias_warning["modelKey"], "grok-4.5");
+        assert_eq!(alias_warning["target"], "model");
+        assert_eq!(alias_warning["key"], "grok-4.5");
         assert_eq!(alias_warning["kind"], "duplicate-alias");
         assert!(
             alias_warning["reason"]
@@ -1915,25 +1938,20 @@ mod tests {
 
     #[test]
     fn skill_entry_source_maps_scopes() {
-        let home = Path::new("/home/u/.grok");
-
         let s = skill_fixture("a", "/repo/.grok/skills/a/SKILL.md", SkillScope::Local);
         assert!(matches!(
-            skill_entry_source(&s, home),
+            skill_entry_source(&s),
             ConfigSource::Project { .. }
         ));
 
         let s = skill_fixture("b", "/repo/.grok/skills/b/SKILL.md", SkillScope::Repo);
         assert!(matches!(
-            skill_entry_source(&s, home),
+            skill_entry_source(&s),
             ConfigSource::Project { .. }
         ));
 
         let s = skill_fixture("c", "/home/u/.grok/skills/c/SKILL.md", SkillScope::User);
-        assert!(matches!(
-            skill_entry_source(&s, home),
-            ConfigSource::User { .. }
-        ));
+        assert!(matches!(skill_entry_source(&s), ConfigSource::User { .. }));
 
         let s = skill_fixture(
             "d",
@@ -1941,73 +1959,14 @@ mod tests {
             SkillScope::Server,
         );
         assert!(matches!(
-            skill_entry_source(&s, home),
+            skill_entry_source(&s),
             ConfigSource::Server { .. }
         ));
 
         let s = skill_fixture("e", "/home/u/.grok/bundled/e/SKILL.md", SkillScope::Bundled);
         assert!(matches!(
-            skill_entry_source(&s, home),
+            skill_entry_source(&s),
             ConfigSource::Bundled { .. }
-        ));
-    }
-
-    /// Bundled skills are re-labeled `Bundled` only at their exact extraction
-    /// path `<grok_home>/skills/<name>/SKILL.md`; a same-named skill anywhere
-    /// else keeps its real source.
-    #[test]
-    fn skill_entry_source_relabels_extracted_bundled_skills() {
-        let home = Path::new("/home/u/.grok");
-
-        let s = skill_fixture(
-            "help",
-            "/home/u/.grok/skills/help/SKILL.md",
-            SkillScope::User,
-        );
-        assert!(matches!(
-            skill_entry_source(&s, home),
-            ConfigSource::Bundled { .. }
-        ));
-
-        // Bundled name in a project dir: stays project.
-        let s = skill_fixture("help", "/repo/.grok/skills/help/SKILL.md", SkillScope::Repo);
-        assert!(matches!(
-            skill_entry_source(&s, home),
-            ConfigSource::Project { .. }
-        ));
-
-        // Bundled name in a user dir outside <grok_home>/skills: stays user.
-        let s = skill_fixture(
-            "help",
-            "/home/u/other-skills/help/SKILL.md",
-            SkillScope::User,
-        );
-        assert!(matches!(
-            skill_entry_source(&s, home),
-            ConfigSource::User { .. }
-        ));
-
-        // Bundled frontmatter name in a different dir under <grok_home>/skills:
-        // not the extracted copy — stays user.
-        let s = skill_fixture(
-            "help",
-            "/home/u/.grok/skills/my-tools/SKILL.md",
-            SkillScope::User,
-        );
-        assert!(matches!(
-            skill_entry_source(&s, home),
-            ConfigSource::User { .. }
-        ));
-
-        // Non-bundled name under <grok_home>/skills: stays user.
-        let s = skill_fixture(
-            "my-skill",
-            "/home/u/.grok/skills/my-skill/SKILL.md",
-            SkillScope::User,
-        );
-        assert!(matches!(
-            skill_entry_source(&s, home),
-            ConfigSource::User { .. }
         ));
     }
 
@@ -2015,13 +1974,12 @@ mod tests {
     /// over the scope fallback.
     #[test]
     fn skill_entry_source_prefers_stamped_config_source() {
-        let home = Path::new("/home/u/.grok");
         let mut s = skill_fixture("cfg", "/team/skills/cfg/SKILL.md", SkillScope::User);
         s.config_source = Some(ConfigSource::ConfigToml {
             path: PathBuf::from("/team/skills/cfg/SKILL.md"),
         });
         assert!(matches!(
-            skill_entry_source(&s, home),
+            skill_entry_source(&s),
             ConfigSource::ConfigToml { .. }
         ));
     }

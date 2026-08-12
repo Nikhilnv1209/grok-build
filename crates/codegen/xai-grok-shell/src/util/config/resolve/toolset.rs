@@ -40,6 +40,26 @@ pub fn resolve_search_tools_enabled(
     )
 }
 
+/// Parse `[shell_environment_policy]` from the merged effective config, or `None`
+/// when unset or unparseable (the child then inherits the full environment). This
+/// is the authoritative parse; the `Config` field of the same name only feeds the
+/// unrecognized-key scan.
+pub fn resolve_shell_env_policy(
+    effective_cfg: Option<&TomlValue>,
+) -> Option<xai_grok_tools::util::ShellEnvironmentPolicy> {
+    let value = effective_cfg?.get("shell_environment_policy")?.clone();
+    match value.try_into::<xai_grok_tools::util::ShellEnvironmentPolicy>() {
+        Ok(policy) => Some(policy),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "failed to parse [shell_environment_policy]; inheriting the full environment"
+            );
+            None
+        }
+    }
+}
+
 /// Pure precedence for [`resolve_search_tools_enabled`] (tiers injected so it is
 /// unit-testable without env/disk): requirement (org policy) wins outright — even
 /// over the user `DISABLE_*` master kill-switch — then the master forces off,
@@ -189,6 +209,142 @@ mod login_shell_capture_tests {
             Some(true),
         );
         unsafe { std::env::remove_var(ENV_LOGIN_SHELL_CAPTURE) };
+        assert!(!off);
+    }
+}
+
+const ENV_SCHEDULER_BACKGROUND_LOOPS: &str = "GROK_SCHEDULER_BACKGROUND_LOOPS";
+
+fn scheduler_background_loops_from_toml(v: Option<&TomlValue>) -> Option<bool> {
+    v?.get("scheduler")?.get("background_loops")?.as_bool()
+}
+
+/// Resolve whether scheduled task fires run in background loop subagents.
+///
+/// Precedence: requirements > env (`GROK_SCHEDULER_BACKGROUND_LOOPS`) > user
+/// `config.toml` `[scheduler] background_loops` > managed layers > remote
+/// settings > default `true`.
+pub fn resolve_scheduler_background_loops(remote: Option<bool>) -> bool {
+    let requirements = crate::config::load_merged_requirements();
+    let layers = match crate::config::ConfigLayers::load() {
+        Ok(l) => Some(l),
+        Err(e) => {
+            tracing::warn!(error = %e, "scheduler_background_loops: failed to load config layers");
+            None
+        }
+    };
+    resolve_scheduler_background_loops_tiers(
+        requirements.as_ref(),
+        layers.as_ref().map(|l| &l.user),
+        layers.as_ref().map(|l| &l.managed),
+        layers.as_ref().map(|l| &l.system_managed),
+        remote,
+    )
+}
+
+fn resolve_scheduler_background_loops_tiers(
+    requirements: Option<&TomlValue>,
+    user: Option<&TomlValue>,
+    managed: Option<&TomlValue>,
+    system_managed: Option<&TomlValue>,
+    remote: Option<bool>,
+) -> bool {
+    use crate::agent::config::BoolFlag;
+    BoolFlag::env(ENV_SCHEDULER_BACKGROUND_LOOPS)
+        .requirement(scheduler_background_loops_from_toml(requirements))
+        .config(scheduler_background_loops_from_toml(user))
+        .managed(
+            scheduler_background_loops_from_toml(managed)
+                .or_else(|| scheduler_background_loops_from_toml(system_managed)),
+        )
+        .feature_flag(remote)
+        .default(true)
+        .resolve()
+        .value
+}
+
+#[cfg(test)]
+mod scheduler_background_loops_tests {
+    use super::{ENV_SCHEDULER_BACKGROUND_LOOPS, resolve_scheduler_background_loops_tiers};
+    use toml::Value as TomlValue;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        let g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        unsafe { std::env::remove_var(ENV_SCHEDULER_BACKGROUND_LOOPS) };
+        g
+    }
+
+    fn cfg(enabled: bool) -> TomlValue {
+        toml::from_str(&format!("[scheduler]\nbackground_loops = {enabled}\n")).unwrap()
+    }
+
+    #[test]
+    fn defaults_on() {
+        let _g = guard();
+        assert!(resolve_scheduler_background_loops_tiers(
+            None, None, None, None, None
+        ));
+    }
+
+    #[test]
+    fn remote_flag_can_disable() {
+        let _g = guard();
+        assert!(!resolve_scheduler_background_loops_tiers(
+            None,
+            None,
+            None,
+            None,
+            Some(false)
+        ));
+    }
+
+    #[test]
+    fn user_config_beats_remote() {
+        let _g = guard();
+        assert!(resolve_scheduler_background_loops_tiers(
+            None,
+            Some(&cfg(true)),
+            None,
+            None,
+            Some(false)
+        ));
+        assert!(!resolve_scheduler_background_loops_tiers(
+            None,
+            Some(&cfg(false)),
+            None,
+            None,
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn env_beats_config_and_remote() {
+        let _g = guard();
+        unsafe { std::env::set_var(ENV_SCHEDULER_BACKGROUND_LOOPS, "0") };
+        let off = resolve_scheduler_background_loops_tiers(
+            None,
+            Some(&cfg(true)),
+            None,
+            None,
+            Some(true),
+        );
+        unsafe { std::env::remove_var(ENV_SCHEDULER_BACKGROUND_LOOPS) };
+        assert!(!off);
+    }
+
+    #[test]
+    fn requirements_win_outright() {
+        let _g = guard();
+        unsafe { std::env::set_var(ENV_SCHEDULER_BACKGROUND_LOOPS, "1") };
+        let off = resolve_scheduler_background_loops_tiers(
+            Some(&cfg(false)),
+            Some(&cfg(true)),
+            None,
+            None,
+            Some(true),
+        );
+        unsafe { std::env::remove_var(ENV_SCHEDULER_BACKGROUND_LOOPS) };
         assert!(!off);
     }
 }
@@ -566,5 +722,44 @@ mod tests {
             None,
             Some(false)
         ));
+    }
+}
+
+#[cfg(test)]
+mod shell_env_policy_tests {
+    use super::*;
+    use xai_grok_tools::util::{EnvironmentVariablePattern, ShellEnvironmentPolicyInherit};
+
+    #[test]
+    fn resolve_shell_env_policy_absent_parsed_typo_and_typed_error() {
+        // Absent table → None (child inherits the full environment).
+        let empty: TomlValue = toml::from_str("").unwrap();
+        assert!(resolve_shell_env_policy(Some(&empty)).is_none());
+        assert!(resolve_shell_env_policy(None).is_none());
+
+        // A well-formed table parses through.
+        let cfg: TomlValue =
+            toml::from_str("[shell_environment_policy]\ninherit = \"core\"\nexclude = [\"FOO\"]\n")
+                .unwrap();
+        let policy = resolve_shell_env_policy(Some(&cfg)).expect("policy parses");
+        assert_eq!(policy.inherit, ShellEnvironmentPolicyInherit::Core);
+        assert_eq!(
+            policy.exclude,
+            vec![EnvironmentVariablePattern::new_case_insensitive("FOO")]
+        );
+
+        // An unknown sub-key is ignored; the known keys still apply (the
+        // load-time scan warns on the typo).
+        let typo: TomlValue =
+            toml::from_str("[shell_environment_policy]\ninherit = \"none\"\ninhert = \"core\"\n")
+                .unwrap();
+        let policy = resolve_shell_env_policy(Some(&typo)).expect("known keys still parse");
+        assert_eq!(policy.inherit, ShellEnvironmentPolicyInherit::None);
+
+        // A wrong-typed known key fails to parse → None (full environment,
+        // logged), not a spawn abort.
+        let bad: TomlValue =
+            toml::from_str("[shell_environment_policy]\nexclude = \"not-an-array\"\n").unwrap();
+        assert!(resolve_shell_env_policy(Some(&bad)).is_none());
     }
 }

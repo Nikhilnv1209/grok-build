@@ -174,6 +174,7 @@ fn dispatch_load_session_ungated(
             bg_tool_call_to_task: std::collections::HashMap::new(),
             scheduled_tasks: std::collections::HashMap::new(),
             in_flight_prompt: None,
+            compact_held_prompt: None,
             current_prompt_id: None,
             created_via_new: false,
         },
@@ -186,6 +187,9 @@ fn dispatch_load_session_ungated(
     agent_mut.loading_placeholder_id = Some(loading_placeholder_id);
     agent_mut.prompt.set_compact(app.appearance.prompt.compact);
     agent_mut.prompt.adopt_slash_mru(app.slash_mru.clone());
+    agent_mut
+        .prompt
+        .adopt_command_tags(app.command_tags.clone());
     agent_mut
         .prompt
         .set_contextual_hints(app.contextual_hints.undo, app.contextual_hints.plan_mode);
@@ -217,6 +221,7 @@ fn dispatch_load_session_ungated(
         agent_id,
         session_id,
         session_cwd,
+        // Conversation-entry bit; effects OR SessionFlags.chat_mode for meta.
         chat_kind,
     }]
 }
@@ -408,6 +413,18 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
     }
     dispatch_new_worktree_session(app, Some(session_id), None, None, None, None, None)
 }
+fn keep_picker_entry(
+    entry: &crate::app::app_view::SessionPickerEntry,
+    source: &str,
+    session_id: &str,
+    match_id_only: bool,
+) -> bool {
+    if match_id_only {
+        entry.id != session_id
+    } else {
+        entry.source != source || entry.id != session_id
+    }
+}
 /// Remove a deleted session identity from the modal session picker and the
 /// welcome-screen picker, then re-anchor the selection on a real row.
 ///
@@ -417,6 +434,7 @@ pub(in crate::app::dispatch) fn remove_session_from_pickers(
     app: &mut AppView,
     source: &str,
     session_id: &str,
+    match_id_only: bool,
 ) {
     use crate::views::modal::ActiveModal;
     use crate::views::session_picker::build_entry_map;
@@ -442,7 +460,7 @@ pub(in crate::app::dispatch) fn remove_session_from_pickers(
             *pending_delete = None;
         }
         if let Some(list) = entries.as_mut() {
-            list.retain(|entry| entry.source != source || entry.id != session_id);
+            list.retain(|entry| keep_picker_entry(entry, source, session_id, match_id_only));
         }
         if let Some(hits) = content_results.as_mut() {
             hits.retain(|h| h.session_id != session_id);
@@ -464,7 +482,7 @@ pub(in crate::app::dispatch) fn remove_session_from_pickers(
         reanchor_grouped_selection(state, &map);
     }
     if let Some(list) = app.session_picker_entries.as_mut() {
-        list.retain(|entry| entry.source != source || entry.id != session_id);
+        list.retain(|entry| keep_picker_entry(entry, source, session_id, match_id_only));
     }
     if let Some(hits) = app.session_picker_content_results.as_mut() {
         hits.retain(|h| h.session_id != session_id);
@@ -822,6 +840,7 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
             bg_tool_call_to_task: std::collections::HashMap::new(),
             scheduled_tasks: std::collections::HashMap::new(),
             in_flight_prompt: None,
+            compact_held_prompt: None,
             current_prompt_id: None,
             created_via_new: false,
         },
@@ -834,6 +853,7 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
         agent.begin_replay_window();
         agent.prompt.set_compact(app.appearance.prompt.compact);
         agent.prompt.adopt_slash_mru(app.slash_mru.clone());
+        agent.prompt.adopt_command_tags(app.command_tags.clone());
         agent
             .prompt
             .set_contextual_hints(app.contextual_hints.undo, app.contextual_hints.plan_mode);
@@ -872,6 +892,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
     restore_summary: Option<String>,
     restore_degree: Option<xai_grok_workspace::session::git::RestoreDegree>,
     running_prompt_id: Option<String>,
+    scheduler_background_loops: Option<bool>,
 ) -> Vec<Effect> {
     tracing::info!(
         "Session loaded for agent {:?} session {:?}",
@@ -884,6 +905,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         }
         let hydrate_sid = session_id.clone();
         agent.bind_session_id(session_id);
+        agent.scheduler_background_loops = scheduler_background_loops;
         agent.scrollback.end_batch();
         agent.session.loading_replay = false;
         agent.session.restore_degree = restore_degree;
@@ -984,8 +1006,14 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
                 prev_model_id: None,
             });
         }
-        if std::mem::take(&mut agent.pending_extensions_fetch) && agent.extensions_modal.is_some() {
-            effects.extend(extensions_modal_tab_fetches(agent_id, hydrate_sid.clone()));
+        if std::mem::take(&mut agent.pending_extensions_fetch)
+            && let Some(modal) = agent.extensions_modal.as_mut()
+        {
+            effects.extend(extensions_modal_tab_fetches(
+                modal,
+                agent_id,
+                hydrate_sid.clone(),
+            ));
         }
         effects.push(Effect::RegisterActiveSession {
             session_id: hydrate_sid,
@@ -1004,10 +1032,7 @@ pub(in crate::app::dispatch) fn handle_session_load_failed(
     session_id: acp::SessionId,
     error: String,
 ) -> Vec<Effect> {
-    tracing::error!(
-        agent = ? agent_id, session = ? session_id, error = % error,
-        "Session load failed"
-    );
+    tracing::error!(agent = ?agent_id, session = ?session_id, error = %error, "Session load failed");
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         if defer_to_open_reload_window(agent, agent_id, "SessionLoadFailed") {
             return vec![];
@@ -1133,6 +1158,7 @@ pub(in crate::app::dispatch) fn handle_session_restored(
         agent_id,
         session_id: local_session_id,
         session_cwd: Some(cwd),
+        // Never a conversation entry (effects OR SessionFlags.chat_mode).
         chat_kind: false,
     }]
 }
@@ -1141,7 +1167,7 @@ pub(in crate::app::dispatch) fn handle_session_restore_failed(
     agent_id: AgentId,
     error: String,
 ) -> Vec<Effect> {
-    tracing::error!(agent = ? agent_id, error = % error, "Session restore failed");
+    tracing::error!(agent = ?agent_id, error = %error, "Session restore failed");
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         if defer_to_open_reload_window(agent, agent_id, "SessionRestoreFailed") {
             return vec![];
@@ -1222,12 +1248,20 @@ pub(in crate::app::dispatch) fn dispatch_session_picker_closed(app: &mut AppView
 /// Fetch invalidation shared by EVERY picker-dismissal path:
 /// modal Esc/mouse close, modal and welcome picks (all variants), and the
 /// welcome-screen Esc. Only chat mode can have a query-stamped search in
-/// flight; Build mode must NOT bump — only the plain list fetch exists there
-/// and its responses keep their pre-existing last-write-wins behavior.
+/// flight; a Build-mode MODAL close must NOT bump — only the plain list
+/// fetch exists there and its response lands on the hidden welcome fields
+/// (pre-existing last-write-wins behavior). A WELCOME dismissal must bump
+/// and drop the loading flag: the welcome view survives the close, so a
+/// still-loading flag holds `show_picker` in a spinner limbo that ignores
+/// input until the late response lands and resurrects the picker.
 fn invalidate_picker_fetch_on_dismiss(app: &mut AppView) {
     invalidate_foreign_picker(app);
-    if app.chat_mode {
+    let welcome_dismissal = matches!(app.active_view, crate::app::app_view::ActiveView::Welcome);
+    if app.chat_mode || welcome_dismissal {
         app.session_picker_list_seq += 1;
+    }
+    if welcome_dismissal {
+        app.session_picker_loading = false;
     }
     app.session_picker_deep_search_seq += 1;
     app.session_picker_content_loading = false;
