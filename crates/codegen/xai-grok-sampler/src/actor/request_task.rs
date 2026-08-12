@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use xai_grok_sampling_types::{
-    ConversationRequest, ConversationResponse, EmptyResponseContext, SamplingError,
+    ConversationRequest, ConversationResponse, EmptyResponseContext, SamplingError, SentCredential,
     error::Result as SamplingResult,
 };
 
@@ -380,6 +380,11 @@ async fn apply_retry_decision(
                 send_completion(completion_tx, Err(clone_error(err)));
                 return false;
             }
+            tracing::warn!(
+                stripped,
+                error = %err,
+                "stripped {stripped} image(s) after server rejection; retrying without them"
+            );
             *retry_count += 1;
             emit_retrying(event_tx, request_id, *retry_count, max_retries, err);
             true
@@ -692,7 +697,10 @@ fn synthesize_from_info(info: &SamplingErrorInfo) -> SamplingError {
                 .find_map(|tok| tok.strip_suffix('s').and_then(|n| n.parse::<u64>().ok()))
                 .unwrap_or(0),
         },
-        SamplingErrorKind::Auth => SamplingError::Auth(info.message.clone()),
+        SamplingErrorKind::Auth => SamplingError::Auth {
+            message: info.message.clone(),
+            credential: info.credential,
+        },
         // Must stay Serialization: EventStreamError is retryable, and a
         // response-parse failure is deterministic on retry. `info.message`
         // is the variant's rendered Display, so rebuild via the constructor
@@ -711,7 +719,8 @@ fn synthesize_from_info(info: &SamplingErrorInfo) -> SamplingError {
                 message: info.message.clone(),
                 model_metadata: info.model_metadata.clone(),
                 retry_after_secs: info.retry_after_secs,
-                should_retry: None,
+                should_retry: info.should_retry,
+                error_code: info.error_code.clone(),
             }
         }
         SamplingErrorKind::EmptyResponse => {
@@ -822,10 +831,13 @@ fn handle_cancellation(
         message: "request cancelled".to_string(),
         is_retryable: false,
         retry_after_secs: None,
+        should_retry: None,
+        error_code: None,
         model_metadata: None,
         empty_response_context: None,
         doom_loop_triggers: None,
         doom_loop_aborted_at_chunk: None,
+        credential: SentCredential::Unknown,
     };
     let _ = event_tx.send(SamplingEvent::Failed {
         request_id: request_id.clone(),
@@ -833,7 +845,7 @@ fn handle_cancellation(
     });
     send_completion(
         completion_tx,
-        Err(SamplingError::Auth("request cancelled".to_string())),
+        Err(SamplingError::auth_unknown("request cancelled")),
     );
 }
 
@@ -850,6 +862,7 @@ fn send_completion(
 mod tests {
     use super::*;
     use futures_util::stream;
+    use xai_grok_sampling_types::ApiErrorCode;
 
     #[test]
     fn synthesize_idle_timeout_extracts_elapsed_secs() {
@@ -859,10 +872,13 @@ mod tests {
             message: "inference idle timeout after 240s with no chunks".to_string(),
             is_retryable: false,
             retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
             doom_loop_aborted_at_chunk: None,
+            credential: SentCredential::Unknown,
         };
         let err = synthesize_from_info(&info);
         match err {
@@ -879,21 +895,76 @@ mod tests {
             message: "boom".to_string(),
             is_retryable: true,
             retry_after_secs: None,
+            should_retry: Some(false),
+            error_code: None,
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
             doom_loop_aborted_at_chunk: None,
+            credential: SentCredential::Unknown,
         };
         let err = synthesize_from_info(&info);
         match err {
             SamplingError::Api {
-                status, message, ..
+                status,
+                message,
+                should_retry,
+                ..
             } => {
                 assert_eq!(status.as_u16(), 500);
                 assert_eq!(message, "boom");
+                assert_eq!(should_retry, Some(false), "server veto must survive");
             }
             other => panic!("expected Api, got {other:?}"),
         }
+    }
+
+    /// A coded invalid-image error must survive the info round trip: the
+    /// message alone would not classify, so losing the code would silently
+    /// disable strip recovery on synthesized failures.
+    #[test]
+    fn synthesize_preserves_error_code_and_image_classification() {
+        let original = SamplingError::Api {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            message: "some future wording without the legacy phrase".to_string(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: Some(ApiErrorCode::InvalidImage),
+        };
+        assert!(original.is_image_processing_error());
+
+        let info = SamplingErrorInfo::from(&original);
+        assert_eq!(info.error_code, Some(ApiErrorCode::InvalidImage));
+
+        let round_tripped = synthesize_from_info(&info);
+        assert!(
+            round_tripped.is_image_processing_error(),
+            "round-tripped error must still classify: {round_tripped:?}"
+        );
+    }
+
+    /// A StreamError-sourced info has `status_code: None`; synthesis falls
+    /// back to a 500 Api error. That fallback must stay inside the
+    /// classifier's 400|500 gate, or coded mid-stream image rejections
+    /// silently stop stripping after the round trip.
+    #[test]
+    fn synthesize_stream_sourced_info_still_classifies_for_strip() {
+        let original = SamplingError::StreamError {
+            error_type: "invalid_request_error".into(),
+            message: "bad image".into(),
+            code: Some(ApiErrorCode::InvalidImage),
+        };
+        assert!(original.is_image_processing_error());
+
+        let info = SamplingErrorInfo::from(&original);
+        assert_eq!(info.status_code, None, "stream errors carry no status");
+
+        let round_tripped = synthesize_from_info(&info);
+        assert!(
+            round_tripped.is_image_processing_error(),
+            "stream-sourced round trip must still classify: {round_tripped:?}"
+        );
     }
 
     #[test]
@@ -904,10 +975,13 @@ mod tests {
             message: "slow down".to_string(),
             is_retryable: true,
             retry_after_secs: Some(7),
+            should_retry: None,
+            error_code: None,
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
             doom_loop_aborted_at_chunk: None,
+            credential: SentCredential::Unknown,
         };
         let err = synthesize_from_info(&info);
         match err {

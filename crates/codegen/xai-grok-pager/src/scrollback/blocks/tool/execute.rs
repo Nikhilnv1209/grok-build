@@ -4,6 +4,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 
 use super::{PreviewStyle, TOOL_HEADER_RANGE, append_collapsed_body};
+use crate::appearance::AppearanceConfig;
 use crate::appearance::ExecuteHeaderStyle;
 use crate::render::wrapping::word_wrap_lines_with_joiners;
 use crate::scrollback::block::BlockContent;
@@ -723,7 +724,7 @@ impl BlockContent for ExecuteToolCallBlock {
         }
     }
 
-    fn has_vpad(&self, _ctx: &BlockContext) -> bool {
+    fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
         false
     }
 

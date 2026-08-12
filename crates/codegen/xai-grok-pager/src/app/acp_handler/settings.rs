@@ -11,38 +11,30 @@ pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppVi
             "models updated via x.ai/models/update"
         );
 
-        let shell_fallback_current = new_models.current.clone();
-
-        // Override app-level default with the active agent's model.
-        let mut app_models = new_models.clone();
-        if let ActiveView::Agent(id) = app.active_view
-            && let Some(agent) = app.agents.get(&id)
-            && let Some(ref agent_model) = agent.session.models.current
-            && app_models.available.contains_key(agent_model)
-        {
-            app_models.current = Some(agent_model.clone());
+        app.models.update_catalog(new_models.available.clone());
+        let stale = app
+            .models
+            .current
+            .as_ref()
+            .is_none_or(|id| !app.models.available.contains_key(id));
+        if stale && let Some(id) = new_models.current {
+            app.models.set_current(id, None);
         }
 
-        app.models = app_models;
-
         for agent in app.agents.values_mut() {
-            // Log when an update drops the agent's active model — this is the
-            // moment the status bar visibly "switches model mid-conversation"
-            // (the agent falls back to the shell's current model below).
             if let Some(ref current) = agent.session.models.current
                 && !new_models.available.contains_key(current)
             {
-                tracing::warn!(
+                tracing::debug!(
                     current_model = %current.0,
-                    fallback = ?shell_fallback_current.as_ref().map(|m| m.0.as_ref()),
                     available_count = new_models.available.len(),
-                    "models update removed this agent's current model; falling back"
+                    "models update dropped this session's model from the catalog; keeping it displayed"
                 );
             }
             agent
                 .session
                 .models
-                .update_catalog(new_models.available.clone(), shell_fallback_current.clone());
+                .update_catalog(new_models.available.clone());
         }
         true
     } else {
@@ -121,12 +113,13 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
     if let Some(v) = update.show_resolved_model {
         app.show_resolved_model = v;
     }
-    if let Some(v) = update.sharing_enabled {
-        app.sharing_enabled = v;
-        // Propagate to existing agents so slash-command registries stay
-        // in sync (same fan-out pattern used when creating new agents).
+    // Temporary client kill switch: ignore remote `sharing_enabled` until
+    // session share links are restored. Presence is still observed so a
+    // later re-enable can go back to `app.sharing_enabled = v`.
+    if update.sharing_enabled.is_some() {
+        app.sharing_enabled = false;
         for agent in app.agents.values_mut() {
-            agent.set_sharing_enabled(v);
+            agent.set_sharing_enabled(false);
         }
     }
     // Env overrides win over live updates too, mirroring the startup
@@ -152,7 +145,7 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         let was_api_key = app.is_api_key_auth;
         let is_key = super::super::app_view::is_api_key_label(&v);
         app.is_api_key_auth = is_key;
-        app.usage_visible = !is_key && app.team_name.is_none();
+        app.usage_visible = !is_key && app.team_name.is_none() && !app.has_external_auth_provider;
         app.sync_billing_surface_to_agents();
         app.subscription_tier = Some(v);
         app.apply_tier_restrictions();

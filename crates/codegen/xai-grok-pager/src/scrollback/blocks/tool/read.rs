@@ -18,6 +18,7 @@ use crate::theme::Theme;
 const FIRST_LINES: usize = 5;
 const LAST_LINES: usize = 3;
 
+use crate::appearance::AppearanceConfig;
 use xai_grok_tools::implementations::skills::types::skill_name_from_path;
 
 /// What kind of non-text media this read produced.
@@ -422,7 +423,7 @@ impl BlockContent for ReadToolCallBlock {
         super::tool_status_accent(self.error.is_some(), ctx.is_running)
     }
 
-    fn has_vpad(&self, _ctx: &BlockContext) -> bool {
+    fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
         false
     }
 

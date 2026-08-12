@@ -197,6 +197,7 @@ pub(crate) fn reply_to_outcome(reply: &Value) -> PromptOutcome {
         "approve" => PromptOutcome::AllowOnce,
         "always_approve" => match scope_kind_value(reply) {
             Some(("bash_command", Some(value))) => PromptOutcome::AllowAlwaysBashCommand(value),
+            Some(("bash_glob", Some(value))) => PromptOutcome::AllowAlwaysBashGlob(value),
             Some(("server_prefix", Some(value))) => PromptOutcome::AllowAlwaysMcpServer(value),
             Some(("domain", Some(value))) => PromptOutcome::AllowAlwaysDomain(value),
             _ => PromptOutcome::AllowAlways,
@@ -281,6 +282,7 @@ pub fn prompt_outcome_allows(outcome: &PromptOutcome) -> bool {
             | PromptOutcome::AllowEditsForSession
             | PromptOutcome::AllowAlwaysBashCommand(_)
             | PromptOutcome::AllowBashPatternForSession(_)
+            | PromptOutcome::AllowAlwaysBashGlob(_)
             | PromptOutcome::AllowAlwaysDomain(_)
             | PromptOutcome::AllowAlwaysMcpTool(_)
             | PromptOutcome::AllowAlwaysMcpServer(_)

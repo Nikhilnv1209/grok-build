@@ -10,6 +10,7 @@ use crate::scrollback::types::{
 use crate::theme::Theme;
 
 use super::{PreviewStyle, TOOL_HEADER_RANGE, append_collapsed_body};
+use crate::appearance::AppearanceConfig;
 
 /// List directory tool call.
 #[derive(Debug, Clone)]
@@ -224,7 +225,7 @@ impl BlockContent for ListDirToolCallBlock {
         super::tool_status_accent(self.error.is_some(), ctx.is_running)
     }
 
-    fn has_vpad(&self, _ctx: &BlockContext) -> bool {
+    fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
         false
     }
 

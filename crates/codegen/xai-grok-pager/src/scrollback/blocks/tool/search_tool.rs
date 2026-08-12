@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span, Text};
 use xai_grok_workspace::permission::mcp_titleize_segment;
 
 use super::{PreviewStyle, TOOL_HEADER_RANGE, append_collapsed_body};
+use crate::appearance::AppearanceConfig;
 use crate::render::line_utils::truncate_str;
 use crate::scrollback::block::BlockContent;
 use crate::scrollback::types::{
@@ -299,7 +300,7 @@ impl BlockContent for SearchToolCallBlock {
         super::tool_status_accent(self.error.is_some(), ctx.is_running)
     }
 
-    fn has_vpad(&self, _ctx: &BlockContext) -> bool {
+    fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
         false
     }
 

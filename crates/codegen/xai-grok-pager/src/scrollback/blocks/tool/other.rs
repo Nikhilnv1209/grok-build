@@ -2,6 +2,7 @@
 
 use ratatui::text::{Line, Span};
 
+use crate::appearance::AppearanceConfig;
 use crate::render::wrapping::word_wrap_lines;
 use crate::scrollback::block::BlockContent;
 use crate::scrollback::types::{
@@ -314,7 +315,7 @@ impl BlockContent for OtherToolCallBlock {
         super::tool_status_accent(self.error.is_some(), ctx.is_running)
     }
 
-    fn has_vpad(&self, _ctx: &BlockContext) -> bool {
+    fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
         false
     }
 
