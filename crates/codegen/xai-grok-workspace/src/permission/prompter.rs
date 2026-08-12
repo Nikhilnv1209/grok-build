@@ -332,6 +332,7 @@ crate::permission::wire_enum! {
         AllowEditsForSession => "allow_edits_for_session",
         AllowAlwaysBash => "allow_always_bash",
         AllowAlwaysBashGlob => "allow_always_bash_glob",
+        AllowBashPatternForSession => "allow_bash_pattern_for_session",
         AllowAlwaysDomain => "allow_always_domain",
         AllowAlwaysMcpTool => "allow_always_mcp_tool",
         AllowAlwaysMcpServer => "allow_always_mcp_server",
@@ -355,6 +356,7 @@ impl PromptOutcome {
             Self::AllowEditsForSession => PromptOutcomeKind::AllowEditsForSession,
             Self::AllowAlwaysBashCommand(_) => PromptOutcomeKind::AllowAlwaysBash,
             Self::AllowAlwaysBashGlob(_) => PromptOutcomeKind::AllowAlwaysBashGlob,
+            Self::AllowBashPatternForSession(_) => PromptOutcomeKind::AllowBashPatternForSession,
             Self::AllowAlwaysDomain(_) => PromptOutcomeKind::AllowAlwaysDomain,
             Self::AllowAlwaysMcpTool(_) => PromptOutcomeKind::AllowAlwaysMcpTool,
             Self::AllowAlwaysMcpServer(_) => PromptOutcomeKind::AllowAlwaysMcpServer,
@@ -1173,6 +1175,7 @@ mod tests {
                 PromptOutcome::RejectAlwaysBashCommand(String::new()),
                 "reject_always_bash",
             ),
+            (PromptOutcome::AllowBashPatternForSession("touch".into()), "allow_bash_pattern_for_session"),
             (PromptOutcome::Cancelled, "cancelled"),
             (PromptOutcome::FollowupMessage(String::new()), "followup"),
             (PromptOutcome::Error(String::new()), "error"),
@@ -1495,6 +1498,9 @@ mod tests {
             "label must show `curl`, got {:?}",
             opt.name
         );
+    }
+
+    #[test]
     fn parseable_scripts_offer_scoped_rows_and_meta() {
         let p = prompter(ClientType::GrokPager);
         for script in [

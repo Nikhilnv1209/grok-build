@@ -533,7 +533,7 @@ impl<'a> EntryRenderer<'a> {
         let body = match &self.entry.block {
             RenderBlock::Thinking(b) => {
                 let max = self
-                    .appearance
+                    .appearance()
                     .scrollback
                     .blocks
                     .thinking
@@ -548,7 +548,7 @@ impl<'a> EntryRenderer<'a> {
             }
             RenderBlock::ToolCall(ToolCallBlock::Execute(e)) => {
                 let max = self
-                    .appearance
+                    .appearance()
                     .scrollback
                     .blocks
                     .execute
@@ -557,7 +557,7 @@ impl<'a> EntryRenderer<'a> {
             }
             RenderBlock::ToolCall(ToolCallBlock::UseTool(t)) => {
                 let max = self
-                    .appearance
+                    .appearance()
                     .scrollback
                     .blocks
                     .tool
@@ -566,7 +566,7 @@ impl<'a> EntryRenderer<'a> {
             }
             RenderBlock::ToolCall(ToolCallBlock::WebFetch(t)) => {
                 let max = self
-                    .appearance
+                    .appearance()
                     .scrollback
                     .blocks
                     .tool
@@ -575,7 +575,7 @@ impl<'a> EntryRenderer<'a> {
             }
             RenderBlock::ToolCall(ToolCallBlock::WebSearch(t)) => {
                 let max = self
-                    .appearance
+                    .appearance()
                     .scrollback
                     .blocks
                     .tool
@@ -584,7 +584,7 @@ impl<'a> EntryRenderer<'a> {
             }
             RenderBlock::ToolCall(ToolCallBlock::Read(t)) => {
                 let max = self
-                    .appearance
+                    .appearance()
                     .scrollback
                     .blocks
                     .tool
@@ -593,7 +593,7 @@ impl<'a> EntryRenderer<'a> {
             }
             RenderBlock::ToolCall(ToolCallBlock::ListDir(t)) => {
                 let max = self
-                    .appearance
+                    .appearance()
                     .scrollback
                     .blocks
                     .tool

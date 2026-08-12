@@ -2314,7 +2314,7 @@ fn spawn_permission_manager_with_pin(
                                     // Session-scoped only (in-memory). Do NOT
                                     // persist — mirrors AllowEditsForSession.
                                     state.session_allowed_bash_commands.insert(prefix.clone());
-                                    (Decision::Allow, "allow_bash_pattern_for_session")
+                                    Decision::Allow
                                 }
                                 PromptOutcome::AllowAlwaysDomain(_)
                                 | PromptOutcome::AllowAlwaysMcpTool(_)
@@ -2388,7 +2388,7 @@ fn spawn_permission_manager_with_pin(
                                 }
                                 PromptOutcome::AllowBashPatternForSession(_) => {
                                     // Not reachable for non-bash access; defensive.
-                                    (Decision::Allow, "allow_bash_pattern_for_session")
+                                    Decision::Allow
                                 }
                                 PromptOutcome::AllowAlwaysDomain(domain) => {
                                     if let AccessKind::WebFetch(_) = &access {
