@@ -19,8 +19,20 @@ help from an AI agent. It is intentionally generic: replace the placeholders
 
 - Other repos use the machine's global credential helper (a different store
   file) and have remote URLs without `<FORK_ACCOUNT>@` in them.
-- The two accounts never live in the same credential file, and only this repo
+- The two accounts stay out of the same credential file, and only this repo
   reads `<CREDENTIAL_FILE>`.
+
+> **Important, and easy to miss:** `credential.helper` values *accumulate*
+> across config scopes — a repo-local helper does not replace the global one,
+> it runs alongside it. Without the reset below, a successful push also saves
+> the fork token into the machine's shared store (`~/.git-credentials`), and
+> other repos can start matching it — the classic cross-account mix-up. So
+> when setting up, or restoring after a fresh clone, do:
+>
+> ```bash
+> git config credential.helper ''                       # clear inherited helpers for this repo
+> git config --add credential.helper 'store --file=<CREDENTIAL_FILE>'
+> ```
 - A fresh clone of this repo elsewhere loses the per-repo helper (`.git/config`
   doesn't travel) — intentional isolation, not a bug.
 
@@ -49,7 +61,8 @@ clone), the repo-local config was lost. Restore it:
 
 ```bash
 git remote set-url origin https://<FORK_ACCOUNT>@github.com/<FORK_ACCOUNT>/<REPO>.git
-git config credential.helper 'store --file=<CREDENTIAL_FILE>'
+git config credential.helper ''                       # clear inherited helpers
+git config --add credential.helper 'store --file=<CREDENTIAL_FILE>'
 ```
 
 ## 4. Fix: swap in a new token
