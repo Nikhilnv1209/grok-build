@@ -176,10 +176,27 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
             display,
             match_text: info.name.clone(),
             insert_text,
-            description: info.description.clone().unwrap_or_default(),
+            description: provider_tagged_description(info),
         });
     }
     items
+}
+
+/// Pick a model description carrying the provider tag the shell stamps in
+/// `meta.provider` (connected provider name, or "custom" for config.toml
+/// rows). The tag is prefixed so a long description cannot truncate it away
+/// (the dropdown truncates right labels from the tail).
+fn provider_tagged_description(info: &acp::ModelInfo) -> String {
+    let tag = info
+        .meta
+        .as_ref()
+        .and_then(|m| m.get("provider"))
+        .and_then(|v| v.as_str());
+    match (tag, info.description.as_deref()) {
+        (Some(tag), Some(desc)) if !desc.is_empty() => format!("{tag} — {desc}"),
+        (Some(tag), _) => tag.to_string(),
+        (None, desc) => desc.unwrap_or_default().to_string(),
+    }
 }
 
 /// One row per effort level for the `/model` chained effort phase.
@@ -221,6 +238,25 @@ mod tests {
     fn plain_model(id: &str, name: &str) -> (acp::ModelId, acp::ModelInfo) {
         let id = acp::ModelId::new(Arc::from(id));
         let info = acp::ModelInfo::new(id.clone(), name.to_string());
+        (id, info)
+    }
+
+    /// Model row carrying the shell's `meta.provider` tag (provider name or "custom").
+    fn provider_model(
+        id: &str,
+        name: &str,
+        provider: &str,
+        description: Option<&str>,
+    ) -> (acp::ModelId, acp::ModelInfo) {
+        let id = acp::ModelId::new(Arc::from(id));
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "provider".into(),
+            serde_json::Value::String(provider.to_string()),
+        );
+        let mut info = acp::ModelInfo::new(id.clone(), name.to_string())
+            .meta(serde_json::Value::Object(meta).as_object().cloned());
+        info.description = description.map(|d| d.to_string());
         (id, info)
     }
 
@@ -299,6 +335,34 @@ mod tests {
         // Plain model has no trailing space -- Enter commits immediately.
         let plain = items.iter().find(|i| i.match_text == "Grok 4.5").unwrap();
         assert_eq!(plain.insert_text, "Grok 4.5");
+    }
+
+    #[test]
+    fn model_rows_show_provider_tag_or_custom_label() {
+        let mut state = ModelState::default();
+        let (pid, mut pinfo) =
+            provider_model("deepseek-v3", "DeepSeek V3", "DeepSeek", Some("Chat model"));
+        pinfo.description = Some("A fast chat model".to_string());
+        let (cid, cinfo) = provider_model("my-custom", "My Custom", "custom", None);
+        let (bid, mut binfo) = plain_model("grok-4.5", "Grok 4.5");
+        binfo.description = Some("Flagship".to_string());
+        state.available.insert(pid, pinfo);
+        state.available.insert(cid, cinfo);
+        state.available.insert(bid, binfo);
+
+        let items = build_model_items(&state);
+        let by_name = |n: &str| items.iter().find(|i| i.match_text == n).unwrap();
+
+        // Connected provider: tag prefixed ahead of the description so a long
+        // description truncates the tail, never the provider name.
+        assert_eq!(by_name("DeepSeek V3").description, "DeepSeek — A fast chat model");
+        // config.toml row: "custom" tag, no description to fall back on.
+        assert_eq!(by_name("My Custom").description, "custom");
+        // Built-in row: no tag, original description untouched.
+        assert_eq!(by_name("Grok 4.5").description, "Flagship");
+        // Tags never leak into match or insert text.
+        assert_eq!(by_name("DeepSeek V3").match_text, "DeepSeek V3");
+        assert_eq!(by_name("My Custom").insert_text, "My Custom");
     }
 
     #[test]

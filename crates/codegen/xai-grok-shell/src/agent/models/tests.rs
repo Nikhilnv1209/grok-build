@@ -554,6 +554,7 @@ fn model_show_model_fingerprint_reads_catalog_flag() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     flagged.info.show_model_fingerprint = true;
     mgr.insert_test_entry("fp-model", flagged);
@@ -566,6 +567,7 @@ fn model_show_model_fingerprint_reads_catalog_flag() {
             env_key: None,
             auth_provider: None,
             api_base_url: None,
+            custom_config_model: false,
         },
     );
 
@@ -575,6 +577,7 @@ fn model_show_model_fingerprint_reads_catalog_flag() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     custom.info.show_model_fingerprint = true;
     mgr.insert_test_entry("enterprise-key", custom);
@@ -754,6 +757,7 @@ fn rebuild_updates_models_and_available() {
             env_key: None,
             auth_provider: None,
             api_base_url: None,
+            custom_config_model: false,
         },
     );
 
@@ -808,6 +812,7 @@ fn default_reasoning_effort_only_stamps_supporting_model() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     reasoning_entry.info.supports_reasoning_effort = true;
     prefetched.insert("reasoning-model".to_string(), reasoning_entry);
@@ -830,6 +835,7 @@ fn default_reasoning_effort_only_stamps_supporting_model() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     prefetched.insert("plain-model".to_string(), plain_entry);
 
@@ -857,6 +863,7 @@ fn reasoning_effort_override_skips_models_that_do_not_offer_level() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     no_none.info.supports_reasoning_effort = true;
     no_none.info.reasoning_efforts = vec![ReasoningEffortOption {
@@ -875,6 +882,7 @@ fn reasoning_effort_override_skips_models_that_do_not_offer_level() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     with_none.info.supports_reasoning_effort = true;
     with_none.info.reasoning_efforts = vec![ReasoningEffortOption {
@@ -976,6 +984,7 @@ fn cli_reasoning_effort_override_only_stamps_supporting_models() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     reasoning_entry.info.supports_reasoning_effort = true;
     prefetched.insert("reasoning-model".to_string(), reasoning_entry);
@@ -986,6 +995,7 @@ fn cli_reasoning_effort_override_only_stamps_supporting_models() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     prefetched.insert("plain-model".to_string(), plain_entry);
 
@@ -1029,6 +1039,7 @@ fn make_model_entry(model_id: &str) -> ModelEntry {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     }
 }
 
@@ -1176,8 +1187,40 @@ async fn sign_out_clears_catalog_rebuilds_bundled_without_fetching() {
     );
 }
 
+/// Hide the real `~/.grok/models_cache.json` while a cold-boot test runs.
+/// A cache written by a recent real TUI/CLI run is fresh for [`CACHE_TTL`]
+/// and would turn “zero-network cold boot” into a warm one. The file is
+/// restored on drop; callers must be `#[serial]` so no other test reads or
+/// persists the same path meanwhile.
+struct ModelsCacheFileGuard {
+    original: Option<std::path::PathBuf>,
+    stash: Option<std::path::PathBuf>,
+}
+
+impl ModelsCacheFileGuard {
+    fn hide() -> Self {
+        let original = crate::util::grok_home::grok_home().join(MODELS_CACHE_FILE);
+        let stash = original.with_extension("json.test-hide");
+        let hidden = original.exists() && std::fs::rename(&original, &stash).is_ok();
+        ModelsCacheFileGuard {
+            original: hidden.then_some(original),
+            stash: hidden.then_some(stash),
+        }
+    }
+}
+
+impl Drop for ModelsCacheFileGuard {
+    fn drop(&mut self) {
+        if let (Some(original), Some(stash)) = (&self.original, &self.stash) {
+            let _ = std::fs::rename(stash, original);
+        }
+    }
+}
+
+#[serial]
 #[test]
 fn from_config_without_prefetch_produces_usable_catalog() {
+    let _cold_cache = ModelsCacheFileGuard::hide();
     let tmp = tempfile::TempDir::new().unwrap();
     let auth_manager = Arc::new(AuthManager::new(tmp.path(), GrokComConfig::default()));
     let cfg = config::Config::default();
@@ -1898,6 +1941,7 @@ async fn fetch_and_apply_degrades_offline_when_remote_fetch_disabled() {
             env_key: None,
             auth_provider: None,
             api_base_url: None,
+            custom_config_model: false,
         },
     );
 
@@ -1926,6 +1970,7 @@ fn default_model_skips_oauth_only_for_api_key_users() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     oauth_only.info.supported_in_api = false;
     catalog.insert("oauth-only".to_string(), oauth_only);
@@ -1936,6 +1981,7 @@ fn default_model_skips_oauth_only_for_api_key_users() {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     catalog.insert("public-model".to_string(), public);
 

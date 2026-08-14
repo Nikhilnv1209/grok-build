@@ -1856,6 +1856,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     }
 }
 fn byok_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {

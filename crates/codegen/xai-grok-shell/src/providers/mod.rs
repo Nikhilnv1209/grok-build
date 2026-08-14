@@ -69,6 +69,16 @@ pub fn find_provider(input: &str) -> Option<&'static ProviderSpec> {
         .find(|spec| spec.matches(needle))
 }
 
+/// Friendly picker label for an auth scope: `provider:deepseek` → `"DeepSeek"`.
+/// `None` for non-builtin scopes (custom `auth_provider`/`model_provider`
+/// refs), letting callers fall back to their own "custom" marker.
+pub fn provider_label_for_scope(scope: &str) -> Option<&'static str> {
+    scope
+        .strip_prefix(PROVIDER_SCOPE_PREFIX)
+        .and_then(find_provider)
+        .map(|spec| spec.name)
+}
+
 pub fn env_belongs_to_provider(env_name: &str) -> Option<&'static ProviderSpec> {
     builtin_providers()
         .iter()

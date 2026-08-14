@@ -3597,6 +3597,7 @@ pub(crate) fn resolve_model_list(
         });
         let effective = with_provider.as_ref().unwrap_or(model_override);
         let mut entry = effective.apply(key, base, &cfg.endpoints);
+        entry.custom_config_model = true;
         let session_bearer_unsafe = !crate::util::is_xai_api_bearer_url(&entry.info.base_url)
             || entry
                 .api_base_url
@@ -4371,6 +4372,11 @@ pub struct ModelEntry {
     pub auth_provider: Option<crate::auth::AuthProviderRef>,
     /// When set, `base_url` is used for session auth, `api_base_url` for API-key auth.
     pub api_base_url: Option<String>,
+    /// True when the row came from a `[model.*]` entry in `config.toml`, so the
+    /// picker can tag manually configured models as "custom". Never persisted;
+    /// default rows and provider-hydrated rows leave it false.
+    #[serde(skip)]
+    pub(crate) custom_config_model: bool,
 }
 impl ModelEntry {
     /// Minimal fallback entry for an unknown model slug.
@@ -4383,6 +4389,7 @@ impl ModelEntry {
             env_key: None,
             auth_provider: None,
             api_base_url: None,
+            custom_config_model: false,
         }
     }
     pub fn info(&self) -> &ModelInfo {
@@ -4395,6 +4402,7 @@ impl ModelEntry {
             env_key: entry.env_key.clone(),
             auth_provider: None,
             api_base_url: entry.api_base_url.clone(),
+            custom_config_model: false,
         }
     }
     /// Non-empty `api_key`, else first non-empty resolved `env_key`.
@@ -5086,6 +5094,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
             env_key: None,
             auth_provider: None,
             api_base_url: None,
+            custom_config_model: false,
         };
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
         let sampler = sampling_config_for_model(
@@ -5300,6 +5309,7 @@ fn resolve_hidden_default_web_search_sampling_config(
         env_key: None,
         auth_provider: None,
         api_base_url: None,
+        custom_config_model: false,
     };
     let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
     sampling_config_for_model(
@@ -5394,6 +5404,18 @@ pub(crate) fn to_acp_model_info(
                         reasoning_efforts_meta_value(&info.reasoning_efforts),
                     );
                 }
+                // Picker provenance: connected provider name, or "custom" for
+                // `config.toml`-configured rows. Built-in rows carry no tag.
+                let provider_tag = if let Some(ref auth) = model.auth_provider {
+                    crate::providers::provider_label_for_scope(&auth.name).map(str::to_owned)
+                } else if model.custom_config_model {
+                    Some("custom".to_owned())
+                } else {
+                    None
+                };
+                if let Some(tag) = provider_tag {
+                    map.insert("provider".to_string(), serde_json::Value::String(tag));
+                }
                 if map.is_empty() { None } else { Some(map) }
             };
             (
@@ -5466,6 +5488,22 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use xai_grok_test_support::EnvGuard;
+
+    /// Unset the built-in provider env keys for catalog-shape tests. The dev
+    /// machine may legitimately export these (env-based connect), which would
+    /// let `hydrate_connected_models` inject provider rows into otherwise
+    /// empty catalogs. Must be called from a `#[serial]` test.
+    fn without_provider_env() -> Vec<EnvGuard> {
+        const RELEVANT: &[&str] = &[
+            "UMANS_AI_CODING_PLAN_API_KEY",
+            "UMANS_AI_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "OPENCODE_API_KEY",
+            "CMD_API_KEY",
+        ];
+        RELEVANT.iter().map(|key| EnvGuard::unset(key)).collect()
+    }
+
     #[test]
     fn main_cli_tools_override_preserves_profile_injection_policy() {
         let overrides = CliAgentOverrides {
@@ -6517,6 +6555,7 @@ reasoning_effort = "low"
             env_key: env_key.map(EnvKeys::single),
             auth_provider: None,
             api_base_url: api_base_url.map(|s| s.to_string()),
+            custom_config_model: false,
         }
     }
     /// The effective-model RE-support lookup must use the model ACTUALLY used:
@@ -7899,6 +7938,46 @@ reasoning_effort = "low"
         assert_eq!(meta["totalContextTokens"], 200_000);
     }
     #[test]
+    fn acp_model_meta_stamps_provider_or_custom_label() {
+        use crate::auth::AuthProviderRef;
+
+        // Connected provider row: auth_provider scope `provider:deepseek` → "DeepSeek".
+        let mut models = IndexMap::new();
+        let entry = test_model_entry("opencode-deepseek-v4", "https://api.deepseek.com", None, None, None);
+        let provider = crate::providers::builtin_providers()
+            .iter()
+            .find(|s| s.id == "deepseek")
+            .unwrap();
+        let mut connected = entry.clone();
+        connected.auth_provider = Some(AuthProviderRef::fail_closed(provider.scope_key()));
+        models.insert("opencode-deepseek-v4".to_string(), connected);
+
+        // config.toml row: custom_config_model → "custom".
+        let mut custom = test_model_entry("my-custom", "https://custom.example/v1", None, None, None);
+        custom.custom_config_model = true;
+        models.insert("my-custom".to_string(), custom);
+
+        // Built-in row: no tag at all.
+        let builtin = test_model_entry("grok-4.5", "https://cli-chat-proxy.grok.com/v1", None, None, None);
+        models.insert("grok-4.5".to_string(), builtin);
+
+        let acp_models = to_acp_model_info(&models);
+        let meta_for = |id: &str| {
+            acp_models
+                .get(&acp::ModelId::new(id))
+                .expect("model present")
+                .meta
+                .as_ref()
+                .expect("meta present")
+        };
+        assert_eq!(meta_for("opencode-deepseek-v4")["provider"], "DeepSeek");
+        assert_eq!(meta_for("my-custom")["provider"], "custom");
+        assert!(
+            !meta_for("grok-4.5").contains_key("provider"),
+            "built-in rows carry no provider tag",
+        );
+    }
+    #[test]
     fn hidden_model_excluded_from_acp_but_kept_in_catalog() {
         use crate::agent::models::{available_models, resolve_model_catalog};
         let raw_config: toml::Value = toml::from_str(
@@ -8636,8 +8715,10 @@ reasoning_effort = "low"
         assert_eq!(sampling.api_key.as_deref(), Some("session-key"));
         assert_eq!(sampling.base_url, "https://cli-chat-proxy.grok.com/v1",);
     }
+    #[serial]
     #[test]
     fn e2e_enterprise_custom_endpoint_skips_xai_defaults() {
+        let _provider_env = without_provider_env();
         let mut cfg = Config::default();
         cfg.endpoints.models_base_url = Some("https://enterprise.acme.com/v1".to_owned());
         let mut prefetched = IndexMap::new();
@@ -12003,6 +12084,7 @@ default = "grok-4.5"
             env_key: None,
             auth_provider: None,
             api_base_url: None,
+            custom_config_model: false,
         }
     }
     #[test]
@@ -12354,8 +12436,10 @@ default = "grok-4.5"
         let no_p = resolve_model_list(&cfg, None);
         assert!(no_p.contains_key(dm));
     }
+    #[serial]
     #[test]
     fn resolve_model_list_prefetch_visibility_matches_auth_and_server_list() {
+        let _provider_env = without_provider_env();
         let cfg = Config::default();
         let dm = crate::models::default_model();
         let mut defs = default_model_entries(&EndpointsConfig::default());
@@ -12397,8 +12481,10 @@ default = "grok-4.5"
         assert!(resolved.contains_key("other-model"));
         assert!(!resolved.contains_key(dm));
     }
+    #[serial]
     #[test]
     fn resolve_model_list_empty_prefetch_yields_empty_base() {
+        let _provider_env = without_provider_env();
         let cfg = Config::default();
         let resolved = resolve_model_list(&cfg, Some(IndexMap::new()));
         assert!(resolved.is_empty());
