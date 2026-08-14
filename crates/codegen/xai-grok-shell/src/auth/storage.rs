@@ -178,7 +178,7 @@ pub(crate) fn backup_corrupt_auth_file(path: &Path) -> Option<PathBuf> {
 ///   then returns empty map so the caller can write the new credential.
 ///
 /// Other I/O errors (PermissionDenied, etc.) are still returned as errors.
-pub(crate) fn read_auth_json_or_empty_recovering_corrupt(
+pub fn read_auth_json_or_empty_recovering_corrupt(
     auth_file: &Path,
 ) -> std::io::Result<AuthStore> {
     match read_auth_json(auth_file) {
@@ -213,7 +213,7 @@ pub(crate) fn read_auth_json_or_empty_recovering_corrupt(
 ///   relogin). This window is inherent to any sub-1×-free single-file
 ///   replace and is preferable to persisting nothing at all, which would
 ///   leave every concurrent process with a stale, already-revoked token.
-pub(super) fn write_auth_json(auth_file: &Path, auth_store: &AuthStore) -> std::io::Result<()> {
+pub fn write_auth_json(auth_file: &Path, auth_store: &AuthStore) -> std::io::Result<()> {
     write_auth_json_with(auth_file, auth_store, write_auth_json_atomic)
 }
 

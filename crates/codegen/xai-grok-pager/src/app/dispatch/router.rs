@@ -28,6 +28,9 @@ use super::import_claude::{
     dispatch_import_claude_confirm,
 };
 use super::interject::dispatch_interject;
+use super::connect_provider::{
+    dispatch_connect_provider, dispatch_disconnect_provider, dispatch_submit_connect_key,
+};
 use super::jump::{dispatch_jump_dismiss, dispatch_jump_picker_select, dispatch_jump_show_picker};
 use super::modes::{
     dispatch_cycle_mode, dispatch_enter_plan_mode, dispatch_show_plan, dispatch_toggle_yolo,
@@ -1103,6 +1106,15 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PermissionFollowup(text) => dispatch_permission_followup(app, text),
         Action::PermissionCancel => dispatch_permission_cancel(app),
         Action::Logout => dispatch_logout(app),
+        Action::ConnectProvider(provider) => dispatch_connect_provider(app, &provider),
+        Action::SubmitConnectKey { provider, key } => {
+            dispatch_submit_connect_key(app, &provider, &key)
+        }
+        Action::CancelConnectKey => {
+            with_active_agent(app, |agent| agent.active_modal = None);
+            vec![]
+        }
+        Action::DisconnectProvider(provider) => dispatch_disconnect_provider(app, &provider),
         Action::SwitchAccount => dispatch_switch_account(app),
         Action::CheckSubscription => vec![Effect::CheckSubscription { verify: None }],
         Action::OpenSupergrokUrl => dispatch_open_supergrok_url(app),

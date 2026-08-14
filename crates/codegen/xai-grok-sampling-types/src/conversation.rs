@@ -620,6 +620,9 @@ pub struct ConversationRequest {
     pub trace: Option<Box<dyn TraceContext>>,
     /// Reasoning effort level for reasoning models.
     pub reasoning_effort: Option<crate::ReasoningEffort>,
+    /// DeepSeek-style `thinking` envelope for OpenAI-compatible chat requests.
+    /// `None` = plain OpenAI behavior (no `thinking` body field).
+    pub thinking: Option<crate::ChatThinking>,
     /// JSON Schema for structured output (strict mode).
     pub json_schema: Option<serde_json::Value>,
     /// Sticky routing key for prompt-cache reuse; overrides `x_grok_conv_id` for routing.

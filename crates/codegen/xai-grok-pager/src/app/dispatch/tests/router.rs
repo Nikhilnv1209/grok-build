@@ -2056,6 +2056,30 @@ fn find_agent_by_session_id_returns_none_for_unknown() {
     assert!(find_agent_by_session_id(&mut app.agents, "nonexistent").is_none());
 }
 #[test]
+fn connect_key_submit_for_unknown_provider_emits_no_effects() {
+    let mut app = test_app_with_agent();
+    let effects = dispatch(
+        Action::SubmitConnectKey {
+            provider: "openai".into(),
+            key: "sk-x".into(),
+        },
+        &mut app,
+    );
+    assert!(
+        effects.is_empty(),
+        "unknown provider must neither write a key nor ask for a catalog reload"
+    );
+}
+#[test]
+fn disconnect_unknown_provider_emits_no_effects() {
+    let mut app = test_app_with_agent();
+    let effects = dispatch(Action::DisconnectProvider("openai".into()), &mut app);
+    assert!(
+        effects.is_empty(),
+        "unknown provider must neither clear a key nor ask for a catalog reload"
+    );
+}
+#[test]
 fn find_agent_by_session_id_returns_none_when_session_id_is_none() {
     let mut app = test_app_with_agent();
     app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;

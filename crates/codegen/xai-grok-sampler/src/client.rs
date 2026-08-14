@@ -351,6 +351,7 @@ struct ClientDefaults {
     api_backend: ApiBackend,
     auth_scheme: AuthScheme,
     stream_tool_calls: bool,
+    thinking: Option<xai_grok_sampling_types::ChatThinking>,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
 }
 
@@ -497,6 +498,21 @@ pub fn user_agent_string_for(origin: &OriginClientInfo) -> String {
 /// stays the fail-closed one; only an explicit `sent_bearer: None` — a send
 /// the builder provably stamped no credential onto — reaches the uncharged
 /// lane via [`auth_rejected`].
+impl SamplingClient {
+    /// Test-only view of the headers stamped at construction; keeps header
+    /// assertions off the (non-inspectable) reqwest `RequestBuilder`.
+    #[cfg(test)]
+    pub(crate) fn test_default_headers(&self) -> &HeaderMap {
+        &self.default_headers
+    }
+}
+
+/// A request builder coupled to the credential state it was built with, so
+/// a 401 arm cannot classify from anything but the build-time capture. The
+/// wire default (`SentCredential::Unknown`, which charges the retry budget)
+/// stays the fail-closed one; only an explicit `sent_bearer: None` — a send
+/// the builder provably stamped no credential onto — reaches the uncharged
+/// lane via [`auth_rejected`].
 struct SentRequest {
     builder: reqwest::RequestBuilder,
     /// Tail fragment of the credential in the built headers (`None` = no
@@ -575,6 +591,19 @@ impl SamplingClient {
             |var| std::env::var(var).ok(),
             &mut headers,
         );
+
+        // Anthropic Messages and every Anthropic-compatible endpoint require
+        // `anthropic-version`; a user-supplied value (extra_headers /
+        // env_http_headers) always wins, and this default keeps Messages-backend
+        // BYOK working without hand-writing the header per model.
+        if config.api_backend == ApiBackend::Messages
+            && !headers.contains_key(HeaderName::from_static("anthropic-version"))
+        {
+            headers.insert(
+                HeaderName::from_static("anthropic-version"),
+                HeaderValue::from_static("2023-06-01"),
+            );
+        }
 
         // Add x-grok-client-version header for version gating at the proxy.
         if let Some(client_version) = config.client_version.as_ref()
@@ -659,6 +688,7 @@ impl SamplingClient {
             api_backend: config.api_backend,
             auth_scheme: config.auth_scheme,
             stream_tool_calls: config.stream_tool_calls,
+            thinking: config.thinking,
             doom_loop_recovery: config.doom_loop_recovery,
         };
 
@@ -1850,6 +1880,13 @@ impl SamplingClient {
             request.max_output_tokens = self.defaults.max_completion_tokens;
         }
 
+        // Provider-class shaping from the session config. The chat-state actor
+        // always leaves `thinking` empty; the session's SamplerConfig (built
+        // from the model entry in xai-grok-shell) is the owner of this knob.
+        if request.thinking.is_none() {
+            request.thinking = self.defaults.thinking;
+        }
+
         Ok(())
     }
 
@@ -2160,6 +2197,7 @@ mod tests {
             stream_tool_calls: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
+            thinking: None,
             origin_client: None,
             client_identifier: None,
             deployment_id: None,
@@ -2194,6 +2232,7 @@ mod tests {
             search_parameters: None,
             response_format: None,
             reasoning_effort: None,
+            thinking: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,
             x_grok_session_id: None,
@@ -2324,6 +2363,55 @@ mod tests {
         cfg.extra_headers
             .insert("x-XAI-token-auth".to_string(), "xai-grok-cli".to_string());
         let _client = SamplingClient::new(cfg).expect("client with extra headers should construct");
+    }
+
+    /// Anthropic-compatible endpoints require `anthropic-version`; the
+    /// Messages backend adds a default, chat-completions does not, and a
+    /// user-supplied value wins over the default.
+    #[test]
+    fn messages_backend_defaults_anthropic_version() {
+        let cfg = SamplerConfig {
+            api_key: Some("anthropic-key-abc123".to_string()),
+            api_backend: ApiBackend::Messages,
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+        assert_eq!(
+            client
+                .test_default_headers()
+                .get(HeaderName::from_static("anthropic-version"))
+                .map(|v| v.to_str().unwrap_or_default()),
+            Some("2023-06-01")
+        );
+    }
+
+    #[test]
+    fn chat_completions_does_not_default_anthropic_version() {
+        let client = SamplingClient::new(minimal_config()).expect("client should build");
+        assert!(
+            client
+                .test_default_headers()
+                .get(HeaderName::from_static("anthropic-version"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn user_anthropic_version_wins_over_default() {
+        let mut cfg = minimal_config();
+        cfg.api_backend = ApiBackend::Messages;
+        cfg.extra_headers.insert(
+            "anthropic-version".to_string(),
+            "2024-01-01".to_string(),
+        );
+        let client = SamplingClient::new(cfg).expect("client should build");
+        assert_eq!(
+            client
+                .test_default_headers()
+                .get(HeaderName::from_static("anthropic-version"))
+                .map(|v| v.to_str().unwrap_or_default()),
+            Some("2024-01-01")
+        );
     }
 
     #[test]

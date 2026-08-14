@@ -4251,6 +4251,24 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::ReloadAgentModels => {
+            let tx = acp_tx.clone();
+            tasks
+                .spawn(async move {
+                    let req = acp::ExtRequest::new(
+                        "x.ai/internal/reload_models",
+                        serde_json::value::to_raw_value(&serde_json::json!({}))
+                            .expect("serialize reload models params")
+                            .into(),
+                    );
+                    match acp_send(req, &tx).await {
+                        Ok(_) => TaskResult::ModelsReloaded,
+                        Err(e) => TaskResult::ModelsReloadFailed {
+                            error: sanitize_user_error(&format!("{e}")),
+                        },
+                    }
+                });
+        }
         Effect::FetchAppBilling => {
             let tx = acp_tx.clone();
             tasks

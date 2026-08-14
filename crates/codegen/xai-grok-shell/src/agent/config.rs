@@ -3574,6 +3574,7 @@ pub(crate) fn resolve_model_list(
         }
         resolved = prefetched;
     }
+    crate::providers::hydrate_connected_models(&mut resolved);
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
         let base = resolved.shift_remove(key);
@@ -4808,6 +4809,7 @@ pub(crate) fn first_own_credential(
         .filter(|k| !k.trim().is_empty())
         .map(str::to_owned)
         .or_else(|| env_key.and_then(EnvKeys::resolve_value))
+        .or_else(|| env_key.and_then(crate::providers::stored_key_for_env_keys))
 }
 /// Priority: model api_key/env_key > cached auth-provider token > session
 /// token > XAI_API_KEY.
@@ -5201,6 +5203,7 @@ pub(crate) fn sampling_config_for_model(
         context_window: info.context_window.get(),
         client_version,
         reasoning_effort: info.reasoning_effort,
+        thinking: crate::providers::model_thinking(model),
         force_http1: false,
         max_retries: info.max_retries,
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),

@@ -223,6 +223,17 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
     out
 }
 
+/// DeepSeek-family endpoints reject a replayed assistant message that omits
+/// `reasoning_content` when reasoning is enabled, so every assistant message
+/// must carry the field (empty string when the turn had no visible reasoning).
+fn force_reasoning_content_on_assistants(messages: &mut [ChatRequestMessage]) {
+    for msg in messages.iter_mut() {
+        if msg.role == Role::Assistant && msg.reasoning_content.is_none() {
+            msg.reasoning_content = Some(String::new());
+        }
+    }
+}
+
 impl From<ChatResponseMessage> for ConversationItem {
     fn from(msg: ChatResponseMessage) -> Self {
         // Reasoning is dropped: the streaming consumer synthesizes the
@@ -251,9 +262,12 @@ impl From<ChatResponseMessage> for ConversationItem {
 
 impl From<ConversationRequest> for ChatCompletionRequest {
     fn from(req: ConversationRequest) -> Self {
-        let messages: Vec<ChatRequestMessage> = conversation_to_chat_messages(req.items);
+        let mut msgs = conversation_to_chat_messages(req.items);
+    if req.thinking.is_some() {
+        force_reasoning_content_on_assistants(&mut msgs);
+    }
 
-        let tools_is_empty = req.tools.is_empty();
+    let tools_is_empty = req.tools.is_empty();
         let tools: Option<Vec<ToolDefinition>> = if tools_is_empty {
             None
         } else {
@@ -289,7 +303,7 @@ impl From<ConversationRequest> for ChatCompletionRequest {
 
         ChatCompletionRequest {
             model: req.model,
-            messages,
+            messages: msgs,
             temperature: req.temperature,
             max_tokens: req.max_output_tokens,
             top_p: req.top_p,
@@ -301,6 +315,7 @@ impl From<ConversationRequest> for ChatCompletionRequest {
             search_parameters: None,
             response_format,
             reasoning_effort: req.reasoning_effort,
+            thinking: req.thinking,
             x_grok_conv_id: req.x_grok_conv_id,
             x_grok_req_id: req.x_grok_req_id,
             x_grok_session_id: req.x_grok_session_id,

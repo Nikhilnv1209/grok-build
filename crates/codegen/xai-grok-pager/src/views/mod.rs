@@ -22,6 +22,7 @@ pub mod mcps_modal;
 pub mod memory_modal;
 pub mod modal;
 pub mod modal_window;
+pub mod connect_provider_modal;
 pub mod new_worktree_dialog;
 pub mod overlay;
 pub mod overlay_list;

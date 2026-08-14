@@ -432,6 +432,75 @@ fn test_chat_completion_request_omits_reasoning_effort_when_unset() {
 }
 
 #[test]
+fn deepseek_thinking_envelope_and_reasoning_content_replay() {
+    use crate::{ChatThinking, ChatThinkingType, rs};
+    let req = ConversationRequest {
+        thinking: Some(ChatThinking {
+            r#type: ChatThinkingType::Enabled,
+        }),
+        ..ConversationRequest::from_items(vec![
+            ConversationItem::system("be helpful"),
+            ConversationItem::user("first"),
+            ConversationItem::assistant("hello"),
+            ConversationItem::user("second"),
+            ConversationItem::Reasoning(rs::ReasoningItem {
+                id: "thinking-1".into(),
+                summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                    text: "think step".into(),
+                })],
+                content: None,
+                encrypted_content: None,
+                status: Some(rs::OutputStatus::Completed),
+            }),
+            ConversationItem::assistant("answer"),
+        ])
+    };
+    let chat: ChatCompletionRequest = req.into();
+    assert_eq!(
+        chat.thinking,
+        Some(ChatThinking {
+            r#type: ChatThinkingType::Enabled
+        })
+    );
+    let json = serde_json::to_value(&chat).unwrap();
+    assert!(
+        json.pointer("/thinking").is_some(),
+        "deepseek-style thinking envelope must be on the wire: {json:#}"
+    );
+    let msgs = json["messages"].as_array().unwrap();
+    // Every assistant message must carry reasoning_content (empty when the
+    // turn had no visible reasoning) — DeepSeek rejects replays without it.
+    for msg in msgs {
+        if msg["role"] == "assistant" {
+            assert!(
+                msg["reasoning_content"].is_string(),
+                "assistant must carry reasoning_content: {msg}"
+            );
+        }
+    }
+    assert_eq!(msgs[2]["reasoning_content"], "");
+    assert_eq!(msgs[4]["reasoning_content"], "think step");
+}
+
+#[test]
+fn plain_openai_models_omit_thinking_and_reasoning_content_replay() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("be helpful"),
+        ConversationItem::user("first"),
+        ConversationItem::assistant("hello"),
+    ]);
+    let chat: ChatCompletionRequest = req.into();
+    let json = serde_json::to_value(&chat).unwrap();
+    assert!(json.get("thinking").is_none(), "{json:#}");
+    let msgs = json["messages"].as_array().unwrap();
+    assert!(
+        msgs[2].get("reasoning_content").is_none(),
+        "plain OpenAI replay must not carry reasoning_content: {:?}",
+        msgs[2]
+    );
+}
+
+#[test]
 fn test_btw_cross_api_chat_completions_no_regressions() {
     let items = btw_prepare_items(btw_mid_turn_conversation());
     let req = ConversationRequest::from_items(items);

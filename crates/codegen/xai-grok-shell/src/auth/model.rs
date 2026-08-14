@@ -257,7 +257,7 @@ impl GrokAuth {
     }
 }
 
-pub(crate) type AuthStore = BTreeMap<String, GrokAuth>;
+pub type AuthStore = BTreeMap<String, GrokAuth>;
 
 /// User information from the cli-chat-proxy `GET /v1/user` endpoint.
 #[derive(Debug, Clone, Deserialize)]

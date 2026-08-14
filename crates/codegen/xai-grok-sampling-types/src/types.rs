@@ -60,6 +60,20 @@ where
     Option::<T>::deserialize(deserializer).map(|opt| opt.unwrap_or_default())
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatThinkingType {
+    Enabled,
+    Disabled,
+}
+
+/// DeepSeek-style `thinking` body param on Chat Completions requests.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub struct ChatThinking {
+    #[serde(rename = "type")]
+    pub r#type: ChatThinkingType,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,6 +101,8 @@ pub struct ChatCompletionRequest {
     pub response_format: Option<crate::rs::ResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ChatThinking>,
 
     /// custom headers
     #[serde(skip)]
@@ -127,6 +143,7 @@ impl ChatCompletionRequest {
             search_parameters: None,
             response_format: None,
             reasoning_effort: None,
+            thinking: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,
             x_grok_session_id: None,
@@ -153,6 +170,7 @@ impl ChatCompletionRequest {
             search_parameters: None,
             response_format: None,
             reasoning_effort: None,
+            thinking: None,
             x_grok_conv_id: None,
             x_grok_req_id: None,
             x_grok_session_id: None,
@@ -1067,6 +1085,11 @@ pub struct SamplingConfig {
     /// Reasoning effort level for reasoning models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// DeepSeek-style `thinking` envelope for OpenAI-compatible chat requests;
+    /// `None` = plain OpenAI behavior. Provider-class decision lives in
+    /// `xai-grok-shell::providers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ChatThinking>,
     /// When true, inject `stream_tool_calls: true` into the Responses
     /// API request body so the upstream emits per-chunk argument deltas.
     #[serde(default, skip_serializing_if = "Option::is_none")]

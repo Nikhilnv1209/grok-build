@@ -242,6 +242,11 @@ pub enum ActiveModal {
         /// Shared modal window chrome state.
         window: ModalWindowState,
     },
+    /// Secret-input overlay for `/connect <provider>`. Collects a provider
+    /// API key with masked input and submits it for storage.
+    ConnectProvider {
+        state: Box<crate::views::connect_provider_modal::ConnectProviderModal>,
+    },
     /// Documentation panel showing full content of a selected how-to guide.
     DocViewer {
         title: String,
@@ -648,6 +653,7 @@ impl ActiveModal {
             | ActiveModal::ArgPicker { .. }
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
+            | ActiveModal::ConnectProvider { .. }
             | ActiveModal::DocViewer { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
@@ -678,6 +684,7 @@ impl ActiveModal {
                 _ => "Pick option",
             },
             ActiveModal::DocPicker { .. } => "How-to Guides",
+            ActiveModal::ConnectProvider { state } => state.provider.name,
             ActiveModal::DocViewer { title, .. } => title.as_str(),
             ActiveModal::ShortcutsHelp { .. } => "Keyboard Shortcuts",
             ActiveModal::MemoryBrowser { .. } => "Memory",

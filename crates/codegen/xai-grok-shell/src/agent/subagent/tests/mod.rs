@@ -2133,6 +2133,7 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
         env_http_headers: Default::default(),
         context_window: NonZeroU64::new(256_000).expect("non-zero context window"),
         reasoning_effort: None,
+        thinking: None,
         stream_tool_calls: None,
     }
 }

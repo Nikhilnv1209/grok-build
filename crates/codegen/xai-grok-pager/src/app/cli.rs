@@ -21,6 +21,10 @@ pub enum Command {
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
     Logout,
+    /// Connect an open-source model provider (Umans, DeepSeek, OpenCode Zen)
+    Connect(crate::connect_cmd::ConnectArgs),
+    /// Remove a stored provider API key
+    Disconnect(crate::connect_cmd::DisconnectArgs),
     /// Sign in to Grok
     Login {
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
@@ -1400,6 +1404,42 @@ mod tests {
         let args = PagerArgs::try_parse_from(["grok", "logout"]).expect("subcommand parses");
         assert!(matches!(args.command, Some(Command::Logout)));
         assert!(args.prompt.is_none());
+    }
+    #[test]
+    fn connect_parses_provider_and_api_key() {
+        let args = PagerArgs::try_parse_from(["grok", "connect", "umans", "--api-key", "sk-test"])
+            .expect("connect parses");
+        match args.command {
+            Some(Command::Connect(connect)) => {
+                assert_eq!(connect.provider.as_deref(), Some("umans"));
+                assert_eq!(connect.api_key.as_deref(), Some("sk-test"));
+            }
+            other => panic!("expected Connect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_aliases_parse() {
+        for alias in ["commandcode", "cmdc"] {
+            let args = PagerArgs::try_parse_from(["grok", "connect", alias, "--api-key", "sk-t"])
+                .expect("connect alias parses");
+            match args.command {
+                Some(Command::Connect(connect)) => assert_eq!(connect.provider.as_deref(), Some(alias)),
+                other => panic!("expected Connect, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn disconnect_parses_provider() {
+        let args = PagerArgs::try_parse_from(["grok", "disconnect", "deepseek"])
+            .expect("disconnect parses");
+        match args.command {
+            Some(Command::Disconnect(disconnect)) => {
+                assert_eq!(disconnect.provider, "deepseek");
+            }
+            other => panic!("expected Disconnect, got {other:?}"),
+        }
     }
     #[test]
     fn positional_prompt_conflicts_with_headless_single() {

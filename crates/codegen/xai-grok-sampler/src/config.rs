@@ -77,7 +77,13 @@ pub struct SamplerConfig {
     pub idle_timeout_secs: Option<u64>,
 
     // Reasoning effort
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+
+    /// DeepSeek-style `thinking` envelope on Chat Completions requests
+    /// (provider-class shaping; `None` = plain OpenAI behavior).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<xai_grok_sampling_types::ChatThinking>,
 
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
@@ -155,6 +161,7 @@ impl Default for SamplerConfig {
             stream_tool_calls: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
+            thinking: None,
             origin_client: None,
             client_identifier: None,
             deployment_id: None,

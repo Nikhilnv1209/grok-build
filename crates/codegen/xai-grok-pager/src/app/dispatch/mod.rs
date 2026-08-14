@@ -14,6 +14,7 @@
 
 mod auth;
 mod billing;
+mod connect_provider;
 mod cta;
 mod ctx;
 mod dashboard;

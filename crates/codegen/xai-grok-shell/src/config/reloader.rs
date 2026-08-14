@@ -83,6 +83,7 @@ pub enum ConfigUpdate {
 /// messages to the agent via an `mpsc` channel.
 pub(crate) struct ConfigReloader {
     last_auth_key_hash: u64,
+    last_provider_auth_hash: u64,
     last_global_config: toml::Value,
     /// Per-cwd content hash of the project MCP config files, used to
     /// to diff (the dedup lives in `ModelsManager::reload_from_disk_cache`),
@@ -111,6 +112,9 @@ impl ConfigReloader {
     ) -> Self {
         Self {
             last_auth_key_hash: initial_auth_key_hash,
+            last_provider_auth_hash: crate::providers::stored_credentials_fingerprint(
+                &crate::auth::AuthStore::new(),
+            ),
             last_global_config: initial_config,
             last_project_mcp_hashes: HashMap::new(),
             grok_home,
@@ -276,6 +280,13 @@ impl ConfigReloader {
     pub(crate) fn reload_auth(&mut self) -> anyhow::Result<()> {
         let auth_path = self.grok_home.join("auth.json");
         let store = read_auth_json(&auth_path)?;
+
+        let provider_hash = crate::providers::stored_credentials_fingerprint(&store);
+        if provider_hash != self.last_provider_auth_hash {
+            self.last_provider_auth_hash = provider_hash;
+            let _ = self.config_update_tx.send(ConfigUpdate::ModelsChanged);
+            info!("provider credentials changed, reloading model list");
+        }
 
         match crate::auth::lookup_auth(&store, &self.auth_scope) {
             Some(auth) => {

@@ -657,6 +657,18 @@ pub enum Action {
     CancelLogin,
     /// User submitted a manually-pasted auth token (loopback mode).
     SubmitAuthCode(String),
+    /// User opened `/connect <provider>` — show the secret-input overlay.
+    ConnectProvider(String),
+    /// User submitted the API key for a provider connect overlay.
+    SubmitConnectKey {
+        provider: String,
+        key: String,
+    },
+    /// User cancelled the provider connect overlay.
+    CancelConnectKey,
+    /// User ran `/disconnect <provider>` — drop the stored API key and
+    /// reload the catalog.
+    DisconnectProvider(String),
     /// Copy the auth URL to the clipboard during authentication.
     CopyAuthUrl,
     /// Show the raw auth URL with mouse capture disabled for manual copy.
@@ -2111,6 +2123,11 @@ pub enum Effect {
     },
     /// Re-fetch remote settings to check subscription gate.
     RefreshGate,
+    /// Ask the agent to re-resolve its model catalog via
+    /// `x.ai/internal/reload_models`, so a provider connect/disconnect
+    /// becomes selectable immediately. The agent responds with a fresh
+    /// `x.ai/models/update` notification; failure surfaces as a toast.
+    ReloadAgentModels,
     /// Spawn a debounce sleep task for shell suggestions. `agent_id` rides
     /// to the expiry so the fetch is built from the arming agent, not
     /// whatever view is active when the timer fires.
@@ -2689,6 +2706,14 @@ pub enum TaskResult {
         agent_id: AgentId,
         error: String,
     },
+    /// `x.ai/internal/reload_models` request failed (catalog untouched).
+    ModelsReloadFailed {
+        error: String,
+    },
+    /// `x.ai/internal/reload_models` succeeded; the catalog update arrives
+    /// through the agent's `x.ai/models/update` notification, so this result
+    /// carries no payload and only guards the success path.
+    ModelsReloaded,
     /// `/rename --auto` completed successfully.
     ResetSessionTitleComplete {
         agent_id: AgentId,

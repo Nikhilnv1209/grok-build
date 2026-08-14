@@ -964,6 +964,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
+        TaskResult::ModelsReloaded => vec![],
+        TaskResult::ModelsReloadFailed { error } => {
+            app.show_toast(&format!("Model refresh failed: {error}"));
+            vec![]
+        }
         TaskResult::RenameSessionFailed { agent_id, error } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 agent

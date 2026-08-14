@@ -370,6 +370,27 @@ impl AgentView {
             }
         }
 
+        // ConnectProvider: masked secret input. Owns all keys while open
+        // (Enter submits, Esc cancels, anything else types into the editor).
+        if let ActiveModal::ConnectProvider { ref mut state } = *modal {
+            use crate::views::connect_provider_modal::ConnectKeyOutcome;
+            match state.handle_key(key) {
+                ConnectKeyOutcome::Close => {
+                    self.active_modal = None;
+                    return InputOutcome::Changed;
+                }
+                ConnectKeyOutcome::Submit(submit) => {
+                    self.active_modal = None;
+                    return InputOutcome::Action(Action::SubmitConnectKey {
+                        provider: submit.provider,
+                        key: submit.key,
+                    });
+                }
+                ConnectKeyOutcome::Changed => return InputOutcome::Changed,
+                ConnectKeyOutcome::Unhandled => {}
+            }
+        }
+
         // MemoryBrowser: route through ModalWindow chrome, then delegate.
         if let ActiveModal::MemoryBrowser { state } = modal {
             // When the filter input is focused, Esc exits filter mode
@@ -510,6 +531,7 @@ impl AgentView {
             | ActiveModal::ArgPicker { .. }
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
+            | ActiveModal::ConnectProvider { .. }
             | ActiveModal::DocViewer { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
@@ -552,6 +574,13 @@ impl AgentView {
         }
         if let Some(ActiveModal::MemoryBrowser { state }) = self.active_modal.as_mut() {
             return crate::views::memory_modal::handle_memory_paste(state, text);
+        }
+        if let Some(ActiveModal::ConnectProvider { state }) = self.active_modal.as_mut() {
+            use crate::views::connect_provider_modal::ConnectKeyOutcome;
+            return match state.handle_paste(text) {
+                ConnectKeyOutcome::Changed => InputOutcome::Changed,
+                _ => InputOutcome::Unchanged,
+            };
         }
         let settings_outcome = match self.active_modal.as_mut() {
             Some(ActiveModal::Settings { state }) => Some(
@@ -2228,6 +2257,14 @@ impl AgentView {
                         filter_rect: None,
                     });
                 }
+            } else if let modal::ActiveModal::ConnectProvider { state } = active_modal {
+                crate::views::connect_provider_modal::render(
+                    state,
+                    buf,
+                    area,
+                    &theme,
+                    self.scrollback.appearance().prompt.compact,
+                );
             } else if let modal::ActiveModal::DocPicker {
                 entries,
                 state,
