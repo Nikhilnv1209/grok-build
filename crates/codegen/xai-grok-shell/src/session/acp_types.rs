@@ -345,12 +345,26 @@ pub struct RewindResponse {
     pub clean_files: Vec<String>,
     /// List of conflicts that were encountered (if force=false and conflicts exist, success=false)
     pub conflicts: Vec<RewindConflictInfo>,
+    /// Per-file line counts the rewind applied (backward reverted state vs.
+    /// the state before the rewind): `added_lines`/`removed_lines` per path.
+    /// Populated for `All` / `FilesOnly` previews and executions so the TUI
+    /// can show a compact `+N −M` next to each affected file.
+    #[serde(default)]
+    pub file_stats: Vec<RewindFileStat>,
     /// The original prompt text at target_prompt_index, for pre-filling the input field.
     /// Populated on successful conversation rewind (All or ConversationOnly).
     #[serde(default)]
     pub prompt_text: Option<String>,
     /// Optional error message
     pub error: Option<String>,
+}
+
+/// Line-level summary for one file a rewind would revert.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RewindFileStat {
+    pub path: String,
+    pub added_lines: u64,
+    pub removed_lines: u64,
 }
 
 /// Info about a conflict during rewind
@@ -811,6 +825,7 @@ mod tests {
             reverted_files: vec![],
             clean_files: vec![],
             conflicts: vec![],
+            file_stats: vec![],
             prompt_text: Some("fix the bug".into()),
             error: None,
         };
@@ -829,6 +844,7 @@ mod tests {
             reverted_files: vec!["src/main.rs".into()],
             clean_files: vec![],
             conflicts: vec![],
+            file_stats: vec![],
             prompt_text: None,
             error: None,
         };

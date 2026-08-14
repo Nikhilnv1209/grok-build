@@ -183,6 +183,7 @@ impl SessionActor {
                 reverted_files: vec![],
                 clean_files: vec![],
                 conflicts: vec![],
+                file_stats: vec![],
                 prompt_text: None,
                 error: Some(format!(
                     "Cannot rewind to prompt #{} — current prompt index is {}. \
@@ -197,6 +198,7 @@ impl SessionActor {
         // ── Build file revert preview (for All and FilesOnly modes) ─────
         let mut clean_files = Vec::new();
         let mut conflicts = Vec::new();
+        let mut file_stats: Vec<RewindFileStat> = Vec::new();
 
         let wants_file_revert = matches!(mode, RewindMode::All | RewindMode::FilesOnly);
         let wants_conversation_rewind =
@@ -255,6 +257,19 @@ impl SessionActor {
                         conflict_type: conflict_type.to_string(),
                     });
                 }
+
+                // Compact diff summary for the TUI confirm: lines the rewind
+                // adds/removes going from the post-turn state back to the
+                // snapshot. Multiset line diff (numstat-style).
+                let (added_lines, removed_lines) = line_diff_counts(
+                    before_content(&files_to_revert, path).as_deref(),
+                    after_content.as_deref(),
+                );
+                file_stats.push(RewindFileStat {
+                    path: path.to_string(),
+                    added_lines,
+                    removed_lines,
+                });
             }
         }
 
@@ -274,6 +289,7 @@ impl SessionActor {
                 reverted_files: vec![],
                 clean_files,
                 conflicts,
+                file_stats,
                 prompt_text: None,
                 error,
             });
@@ -413,6 +429,7 @@ impl SessionActor {
                             reverted_files: vec![],
                             clean_files: vec![],
                             conflicts: vec![],
+                            file_stats: vec![],
                             prompt_text: None,
                             error: Some(format!(
                                 "Cannot rewind to prompt #{} — compaction checkpoint data is \
@@ -504,6 +521,7 @@ impl SessionActor {
             reverted_files,
             clean_files: vec![],
             conflicts,
+            file_stats,
             prompt_text,
             error: None,
         })
@@ -588,4 +606,45 @@ impl SessionActor {
 
         Ok(report)
     }
+}
+
+/// Snapshot content the rewind would restore for `path` (the earliest
+/// before-snapshot on or after the target prompt).
+fn before_content(
+    files_to_revert: &std::collections::HashMap<
+        xai_grok_workspace::session::file_state::FlexiblePath,
+        Option<String>,
+    >,
+    path: &xai_grok_workspace::session::file_state::FlexiblePath,
+) -> Option<String> {
+    files_to_revert.get(path).cloned().flatten()
+}
+
+/// Numstat-style line counts for `after → before`: `added` lines exist only
+/// in `before` (the rewind writes them), `removed` lines exist only in
+/// `after` (the rewind deletes them). Multiset diff on lines — order-insensitive
+/// like `git diff --numstat`, cheap enough for a preview row.
+fn line_diff_counts(before: Option<&str>, after: Option<&str>) -> (u64, u64) {
+    use std::collections::HashMap;
+
+    let before = before.unwrap_or("");
+    let after = after.unwrap_or("");
+    let mut line_bag: HashMap<&str, i64> = HashMap::new();
+    for line in before.lines() {
+        *line_bag.entry(line).or_default() += 1;
+    }
+    for line in after.lines() {
+        *line_bag.entry(line).or_default() -= 1;
+    }
+    let added = line_bag
+        .values()
+        .filter(|count| **count > 0)
+        .map(|count| count.unsigned_abs())
+        .sum::<u64>();
+    let removed = line_bag
+        .values()
+        .filter(|count| **count < 0)
+        .map(|count| count.unsigned_abs())
+        .sum::<u64>();
+    (added, removed)
 }

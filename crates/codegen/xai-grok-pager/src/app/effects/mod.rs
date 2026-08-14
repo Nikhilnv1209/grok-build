@@ -3915,20 +3915,83 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::RewindExecute { agent_id, session_id, target_prompt_index } => {
+        Effect::RewindPreview {
+            agent_id,
+            session_id,
+            target_prompt_index,
+            mode,
+        } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
                     let request = acp::ExtRequest::new(
                         "x.ai/rewind/execute",
-                        serde_json::value::to_raw_value(
-                                &rewind_execute_params(
-                                    session_id.0.as_ref(),
-                                    target_prompt_index,
-                                ),
-                            )
-                            .expect("serialize rewind/execute params")
-                            .into(),
+                        serde_json::value::to_raw_value(&serde_json::json!({
+                            "sessionId": session_id.0.to_string(),
+                            "targetPromptIndex": target_prompt_index,
+                            "force": false,
+                            "mode": mode.wire_value(),
+                        }))
+                        .expect("serialize rewind/execute preview params")
+                        .into(),
+                    );
+                    match acp_send(request, &tx).await {
+                        Ok(resp) => {
+                            let wrapper: serde_json::Value = serde_json::from_str(
+                                    resp.0.get(),
+                                )
+                                .unwrap_or_default();
+                            let result_val = wrapper
+                                .get("result")
+                                .cloned()
+                                .unwrap_or(wrapper.clone());
+                            match serde_json::from_value::<
+                                crate::views::rewind::RewindResponse,
+                            >(result_val) {
+                                Ok(r) => {
+                                    TaskResult::RewindPreviewComplete {
+                                        agent_id,
+                                        response: r,
+                                        target_prompt_index,
+                                        mode,
+                                    }
+                                }
+                                Err(e) => {
+                                    TaskResult::RewindPreviewFailed {
+                                        agent_id,
+                                        error: format!("invalid response: {e}"),
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            TaskResult::RewindPreviewFailed {
+                                agent_id,
+                                error: sanitize_user_error(&e.to_string()),
+                            }
+                        }
+                    }
+                });
+        }
+        Effect::RewindExecute {
+            agent_id,
+            session_id,
+            target_prompt_index,
+            mode,
+        } => {
+            let tx = acp_tx.clone();
+            tasks
+                .spawn(async move {
+                    let request = acp::ExtRequest::new(
+                        "x.ai/rewind/execute",
+                        serde_json::value::to_raw_value(&serde_json::json!({
+                            "sessionId": session_id.0.to_string(),
+                            "targetPromptIndex": target_prompt_index,
+                            "force": true,
+                            "mode": mode.wire_value(),
+                        }))
+                        .expect("serialize rewind/execute params")
+                        .into(),
                     );
                     match acp_send(request, &tx).await {
                         Ok(resp) => {
@@ -4673,18 +4736,6 @@ fn prompt_request_meta(
         map.insert("screenMode".into(), serde_json::Value::String(mode.into()));
     }
     serde_json::Value::Object(map)
-}
-pub(crate) const REWIND_MODE_WIRE: &str = "conversation_only";
-pub(crate) fn rewind_execute_params(
-    session_id: &str,
-    target_prompt_index: usize,
-) -> serde_json::Value {
-    serde_json::json!({
-        "sessionId": session_id,
-        "targetPromptIndex": target_prompt_index,
-        "force": true,
-        "mode": REWIND_MODE_WIRE,
-    })
 }
 /// Build the `x.ai/interject` params. The optional structured `content`
 /// (text + images) is omitted ENTIRELY when `None` so the legacy wire

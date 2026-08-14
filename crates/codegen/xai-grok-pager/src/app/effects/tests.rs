@@ -2577,11 +2577,15 @@ fn session_picker_entry_maps_to_dormant_roster_row() {
     assert_eq!(roster.origin.host.as_deref(), Some("box"));
 }
 #[test]
-fn rewind_execute_params_sends_conversation_only_with_force() {
-    let params = rewind_execute_params("sess-1", 3);
-    assert_eq!(params["sessionId"], "sess-1");
-    assert_eq!(params["targetPromptIndex"], 3);
-    assert_eq!(params["force"], true);
-    assert_eq!(params["mode"], REWIND_MODE_WIRE);
-    assert_eq!(params["mode"], "conversation_only");
+fn rewind_execute_params_choose_mode_from_include_files() {
+    // The rewind modes are exercised end-to-end by the dispatch tests; this
+    // guards the wire strings the effects embed.
+    use crate::views::rewind::RewindMode;
+    for (mode, wire) in [
+        (RewindMode::All, "all"),
+        (RewindMode::ConversationOnly, "conversation_only"),
+        (RewindMode::FilesOnly, "files_only"),
+    ] {
+        assert_eq!(mode.wire_value(), wire);
+    }
 }

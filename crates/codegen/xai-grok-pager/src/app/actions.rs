@@ -1004,14 +1004,16 @@ pub enum Action {
     Rewind,
     RewindShowPicker,
     RewindPickerSelect(usize),
-    RewindConfirm(usize),
-    /// Confirm rewind and turn off `confirm_before_rewind` for future rewinds.
-    RewindConfirmNeverAsk(usize),
+    RewindSelectMode(crate::views::rewind::RewindMode, usize),
+    RewindConfirm(usize, crate::views::rewind::RewindMode),
+    RewindConversationOnlyConfirm(usize),
     RewindCancelOffer,
     RewindDismiss,
     RewindDismissError,
-    /// Submit an inline edit: conversation-only rewind to that prompt, then
-    /// resubmit the edited text (state lives on `AgentView::inline_edit`).
+    RewindBackToModeSelect,
+    /// Submit an inline edit: rewind to that prompt and resubmit the edited
+    /// text (state lives on `AgentView::inline_edit`). The flow reuses the
+    /// full mode select; only the "files only" row is hidden.
     InlineEditSubmit,
     /// Open the `/jump` turn picker.
     JumpShowPicker,
@@ -2095,10 +2097,19 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
     },
+    /// Dry-run the file half of a rewind (`force: false`) so the TUI can
+    /// show which files would be reverted before confirming.
+    RewindPreview {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        target_prompt_index: usize,
+        mode: crate::views::rewind::RewindMode,
+    },
     RewindExecute {
         agent_id: AgentId,
         session_id: acp::SessionId,
         target_prompt_index: usize,
+        mode: crate::views::rewind::RewindMode,
     },
     /// Fetch billing/credit usage from the agent's `x.ai/billing` extension.
     /// When `silent` is true the result updates `credit_balance` without
@@ -2904,6 +2915,17 @@ pub enum TaskResult {
         points: Vec<crate::views::rewind::RewindPointInfo>,
     },
     RewindPointsFailed {
+        agent_id: AgentId,
+        error: String,
+    },
+    /// File-half dry run finished; dispatch opens the confirm (or error).
+    RewindPreviewComplete {
+        agent_id: AgentId,
+        response: crate::views::rewind::RewindResponse,
+        target_prompt_index: usize,
+        mode: crate::views::rewind::RewindMode,
+    },
+    RewindPreviewFailed {
         agent_id: AgentId,
         error: String,
     },
