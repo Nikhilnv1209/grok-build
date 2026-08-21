@@ -64,18 +64,12 @@ impl ConnectProviderModal {
                 ConnectKeyOutcome::Close
             }
             _ => {
-                // Reuse the prompt's single-line editor semantics (sanitize,
-                // cursor, backspace) by feeding single characters through the
-                // paste path.
-                let mut outcome = LineEditOutcome::Unhandled;
-                if let KeyCode::Char(c) = key.code
-                    && !key.modifiers.contains(KeyModifiers::SUPER)
-                {
-                    let _ = self.secret.insert_paste(&c.to_string());
-                    outcome = LineEditOutcome::TextChanged;
+                // Full single-line editing semantics from the shared prompt
+                // editor: backspace/delete, cursor motion, Ctrl-U, typing.
+                match self.secret.handle_key(key) {
+                    LineEditOutcome::Unhandled => ConnectKeyOutcome::Unhandled,
+                    _ => ConnectKeyOutcome::Changed,
                 }
-                let _ = outcome;
-                ConnectKeyOutcome::Changed
             }
         }
     }
@@ -252,6 +246,33 @@ mod tests {
             }
             other => panic!("expected Submit, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn backspace_deletes_last_typed_character() {
+        let mut modal = ConnectProviderModal::open(find_provider("opencode")).unwrap();
+        for c in ['s', 'k', '-', 'x'] {
+            let _ = modal.handle_key(&key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert!(matches!(
+            modal.handle_key(&key(KeyCode::Backspace, KeyModifiers::NONE)),
+            ConnectKeyOutcome::Changed
+        ));
+        match modal.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE)) {
+            ConnectKeyOutcome::Submit(submit) => assert_eq!(submit.key, "sk-"),
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backspace_on_empty_secret_is_a_noop() {
+        let mut modal = ConnectProviderModal::open(find_provider("deepseek")).unwrap();
+        assert_eq!(
+            modal.handle_key(&key(KeyCode::Backspace, KeyModifiers::NONE)),
+            ConnectKeyOutcome::Changed,
+            "must not close the modal or submit"
+        );
+        assert_eq!(modal.secret_len(), 0);
     }
 
     #[test]
