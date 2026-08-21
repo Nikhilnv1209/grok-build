@@ -292,6 +292,7 @@ fn model_entry(spec: &ProviderSpec, model: &ProviderModel) -> ModelEntry {
     let all_reasoning_efforts: Vec<ReasoningEffort> = model.reasoning_efforts.clone();
     let config = crate::agent::config::ModelEntryConfig {
         id: Some(model.slug.clone()),
+        model_family: None,
         model: model.model.clone(),
         base_url: base_url(spec).to_string(),
         api_base_url: None,

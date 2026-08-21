@@ -489,7 +489,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             result,
             http_status,
             prompt_id,
-        } => handle_prompt_response(app, agent_id, result, http_status, prompt_id),
+        } => {
+            let effects = handle_prompt_response(app, agent_id, result, http_status, prompt_id);
+            app.refresh_status_line_for(agent_id);
+            effects
+        }
         TaskResult::SendPromptNowFailed {
             agent_id,
             session_id,
@@ -551,6 +555,24 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             tracing::trace!("Cancel notification sent successfully");
             vec![]
         }
+        TaskResult::ConsentPersistFailed { error } => {
+            tracing::warn!(%error, "consent answer not persisted; the notice re-arms next launch");
+            app.show_toast(
+                "\u{2717} Could not save your answer, so this notice returns next launch",
+            );
+            vec![]
+        }
+        TaskResult::ConsentRecorded { notice_id, version } => match app.account_email.clone() {
+            Some(account) => {
+                vec![Effect::PersistConsentAnswer {
+                    account: Some(account),
+                    notice_id,
+                    version,
+                    acked: true,
+                }]
+            }
+            None => vec![],
+        },
         TaskResult::KillSubagentComplete {
             session_id,
             subagent_id,
@@ -888,6 +910,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             session_id,
             info,
             text,
+            fields,
             nonce,
         } => {
             let minimal = app.screen_mode.is_minimal();
@@ -906,7 +929,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 }
                 agent.apply_full_context_info(info.data.context);
                 if let Some(state) = usage_modal_state_mut(agent) {
-                    state.session_text = Some(text);
+                    state.session_fields = Some(fields);
                     state.session_error = None;
                 } else if minimal {
                     push_and_page_flip(
@@ -1314,6 +1337,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 agent.session.available_commands_generation += 1;
                 super::super::acp_handler::refresh_workflow_run_capabilities(agent);
             }
+            vec![]
+        }
+        TaskResult::StatusLineCommandFinished { id, outcome } => {
+            app.on_status_line_command_finished(id, outcome);
             vec![]
         }
         TaskResult::AuthCopyFeedbackTimeout { generation } => {

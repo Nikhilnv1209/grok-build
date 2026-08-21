@@ -1143,6 +1143,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 api_backend: crate::sampling::ApiBackend::ChatCompletions,
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),
+                extra_response_includes: Vec::new(),
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
                 context_window: 256_000,
@@ -1166,7 +1167,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 header_injector: None,
             };
             let _ = actor
-                .handle_set_session_model(cfg, false, false, true, 85)
+                .handle_set_session_model(cfg, false, false, false, true, 85)
                 .await;
 
             assert!(
@@ -1237,6 +1238,7 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
                 api_backend: crate::sampling::ApiBackend::ChatCompletions,
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),
+                extra_response_includes: Vec::new(),
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
                 context_window: 256_000,
@@ -1260,7 +1262,7 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
                 header_injector: None,
             };
             let _ = actor
-                .handle_set_session_model(cfg, false, false, true, 85)
+                .handle_set_session_model(cfg, false, false, false, true, 85)
                 .await;
 
             let creds = actor.chat_state_handle.get_credentials().await;

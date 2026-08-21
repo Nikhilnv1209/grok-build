@@ -15,6 +15,7 @@ pub mod agent_view;
 pub mod app_view;
 pub mod bundle;
 pub mod cli;
+pub mod consent;
 pub use crate::link_opener;
 /// Off-thread full-file syntax highlight upgrade for edit diffs.
 pub mod edit_highlight_worker;
@@ -22,6 +23,7 @@ pub mod edit_highlight_worker;
 pub mod mermaid_worker;
 pub use xai_prompt_queue as prompt_queue;
 mod acp_handler;
+mod connect_timeout;
 mod csi_filter;
 mod dispatch;
 /// Display-refresh probe + motion cadence + terminal telemetry at startup.
@@ -32,6 +34,8 @@ pub mod roster;
 pub mod session_startup;
 pub(crate) mod session_title_resolve;
 pub mod status_blocks;
+pub(crate) mod status_line;
+mod status_line_policy;
 pub mod subagent;
 pub mod subscription;
 pub(crate) use effects::sanitize_user_error;
@@ -73,6 +77,7 @@ use std::io::{self, Write};
 use std::panic;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_util::sync::CancellationToken;
+pub(crate) use turn_completion::CANCELLATION_CATEGORY_KEY;
 use xai_grok_shell::util::config;
 /// Tracks the extra Kitty keyboard layer pushed while the `/gboom` game is
 /// open (see [`push_gboom_keyboard_flags`]). Kept separate from the base layer
@@ -197,44 +202,36 @@ pub(crate) fn voice_keybind_enabled() -> bool {
 pub fn set_voice_keybind_enabled_for_test(on: bool) {
     VOICE_KEYBIND_ENABLED.store(on, Ordering::Release);
 }
+fn voice_mode_in(layer: &toml::Value) -> Option<bool> {
+    layer
+        .get("features")?
+        .get(xai_grok_shell::agent::config::Feature::VoiceMode.key())?
+        .as_bool()
+}
 /// `[features] voice_mode` from merged `requirements.toml`.
 pub(crate) fn voice_mode_requirement_pin() -> Option<bool> {
-    xai_grok_config::load_merged_requirements().and_then(|req| {
-        req.get("features")
-            .and_then(|f| f.get("voice_mode"))
-            .and_then(|v| v.as_bool())
-    })
+    voice_mode_in(&xai_grok_config::load_merged_requirements()?)
 }
 /// `[features] voice_mode` from effective config (user + managed).
 pub(crate) fn voice_mode_config_value() -> Option<bool> {
-    xai_grok_shell::config::load_effective_config()
-        .ok()
-        .and_then(|cfg| {
-            cfg.get("features")
-                .and_then(|f| f.get("voice_mode"))
-                .and_then(|v| v.as_bool())
-        })
+    voice_mode_in(&xai_grok_shell::config::load_effective_config().ok()?)
 }
-/// Resolve voice availability.
-///
-/// Precedence: requirements > `GROK_VOICE_MODE` > config/managed
-/// `[features] voice_mode` > remote `voice_mode_enabled` > default on.
-///
-/// When `is_api_key` and the only off-source is remote, force on. Requirement /
-/// env / config `false` still wins.
+/// The registry owns the precedence and the default. One rule has no row there:
+/// with `is_api_key`, a remote-only off is forced back on. A requirement, env,
+/// or config `false` still wins.
 pub(crate) fn resolve_voice_mode_enabled(
     requirement: Option<bool>,
     config: Option<bool>,
     remote: Option<bool>,
     is_api_key: bool,
 ) -> bool {
-    use xai_grok_shell::agent::config::{BoolFlag, ConfigSource};
-    let resolved = BoolFlag::env("GROK_VOICE_MODE")
-        .requirement(requirement)
-        .config(config)
-        .feature_flag(remote)
-        .default(true)
-        .resolve();
+    use xai_grok_shell::agent::config::{ConfigSource, Feature, FeatureSources};
+    let resolved = Feature::VoiceMode.resolve(FeatureSources {
+        pin: requirement,
+        config,
+        remote,
+        ..FeatureSources::from_process_env(Feature::VoiceMode)
+    });
     if resolved.value {
         return true;
     }
@@ -565,7 +562,7 @@ async fn bounded_connect(
         target,
         attempt,
         version: xai_grok_version::display_version_with_commit(
-            env!("VERSION_WITH_COMMIT"),
+            xai_grok_version::full_version(),
             xai_grok_update::channel_label(),
         ),
         log_path: xai_grok_telemetry::unified_log::path(),
@@ -796,10 +793,10 @@ pub async fn run(
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
     );
-    let connect_flags = crate::acp::ConnectFlags {
+    let mut connect_flags = crate::acp::ConnectFlags {
         subagents: !args.no_subagents,
-        experimental_memory: args.experimental_memory,
-        no_memory: args.no_memory,
+        memory_enabled_override: args.memory_enabled_override(),
+        memory_override_flag: args.memory_override_flag(),
         disable_web_search: args.disable_web_search,
         todo_gate: args.todo_gate,
         laziness_debug_log: None,
@@ -823,6 +820,7 @@ pub async fn run(
         ),
         default_yolo_mode: launch_yolo.yolo,
         default_auto_mode: launch_auto && !launch_yolo.yolo,
+        status_line: false,
     };
     let mut config_watcher = crate::appearance::ConfigWatcher::start().await?;
     let alt_screen_config_mode = config_watcher.current().alt_screen;
@@ -855,6 +853,10 @@ pub async fn run(
         Ordering::Release,
     );
     let minimal = screen_mode.is_minimal();
+    connect_flags.status_line = status_line::draws_a_row(
+        screen_mode,
+        &event_loop::load_initial_ui_config().status_line,
+    );
     let relaunched_into_minimal = screen_mode_override == Some(ScreenMode::Minimal);
     let relaunched_into_fullscreen = screen_mode_override == Some(ScreenMode::Fullscreen);
     tracing::info!(
@@ -880,7 +882,11 @@ pub async fn run(
     let (frame_tx, writer_sync, writer_event_rx, writer_thread) =
         crate::render::draw::spawn_writer_thread();
     let cursor_blink = event_loop::load_initial_ui_config().cursor_blink;
-    let (mut terminal, screen_mode) = init_terminal(
+    let TerminalInit {
+        mut terminal,
+        screen_mode,
+        startup_typeahead,
+    } = init_terminal(
         screen_mode,
         minimal_live_rows,
         relaunched_into_minimal,
@@ -897,7 +903,17 @@ pub async fn run(
     if let Some(ref t) = session_title {
         set_terminal_title(t);
     }
-    const CONNECT_UI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    let connect_ui_timeout_env = std::env::var(connect_timeout::CONNECT_UI_TIMEOUT_ENV).ok();
+    let connect_ui_timeout = connect_timeout::resolve(connect_ui_timeout_env.as_deref());
+    if let Some(raw) = connect_ui_timeout_env {
+        crate::unified_log::write_direct_info(
+            "startup connect budget from env",
+            Some(serde_json::json!({
+                "raw": raw,
+                "timeout_secs": connect_ui_timeout.as_secs(),
+            })),
+        );
+    }
     let fallback_flags = use_leader.then(|| connect_flags.clone());
     let primary_target = if use_leader {
         crate::acp::AgentKind::Leader
@@ -907,7 +923,7 @@ pub async fn run(
     xai_grok_telemetry::external::init(
         xai_grok_shell::agent::config::resolve_external_otel_config(
             xai_grok_telemetry::external::config::ExternalClientInfo {
-                service_version: env!("VERSION_WITH_COMMIT").to_owned(),
+                service_version: xai_grok_version::full_version().to_owned(),
                 client_version: xai_grok_version::VERSION.to_owned(),
                 app_entrypoint: "tui".to_owned(),
             },
@@ -918,7 +934,7 @@ pub async fn run(
     let primary_started = std::time::Instant::now();
     let connect_result = bounded_connect(
         &cancel,
-        CONNECT_UI_TIMEOUT,
+        connect_ui_timeout,
         primary_target,
         startup_failure::ConnectAttempt::First,
         &timer,
@@ -940,7 +956,7 @@ pub async fn run(
             let target = crate::acp::AgentKind::Embedded;
             let fallback = bounded_connect(
                 &cancel,
-                CONNECT_UI_TIMEOUT,
+                connect_ui_timeout,
                 target,
                 startup_failure::ConnectAttempt::AfterFallback(startup_failure::EarlierAttempt {
                     target: primary_target,
@@ -1002,6 +1018,7 @@ pub async fn run(
         relaunched_into_minimal,
         relaunched_into_fullscreen,
         initial_theme: crate::theme::cache::current_kind(),
+        startup_typeahead,
     };
     let result = event_loop::run(
         &mut terminal,
@@ -1031,6 +1048,7 @@ pub async fn run(
     let restore_result = restore_terminal(terminal, writer_thread, screen_mode);
     drop(agent_guard);
     xai_tty_utils::global_process_scope().kill_all();
+    crate::app::status_line::metrics::global().report_health();
     if let Err(cleanup_error) = restore_result {
         match &result {
             Ok(_) => {
@@ -1131,22 +1149,6 @@ fn disable_mouse_paste_raw() {
         let _ = stderr.write_all(xai_crash_handler::terminal::MOUSE_PASTE_RESET);
         let _ = stderr.flush();
     });
-}
-/// Drain any pending terminal input events.
-///
-/// External processes (SSH/GPG agents, etc.) may write to the TTY (e.g. "Enter
-/// encryption key:") before we take over. This helper drains the crossterm
-/// event queue so those characters don't appear as ghost text in the input
-/// field.
-fn drain_pending_events() {
-    drain_pending_events_with_timeout(std::time::Duration::from_millis(0));
-}
-fn drain_pending_events_with_timeout(timeout: std::time::Duration) {
-    while crossterm::event::poll(timeout).unwrap_or(false) {
-        if crossterm::event::read().is_err() {
-            break;
-        }
-    }
 }
 /// Set the console output code page to UTF-8 and enable
 /// `ENABLE_VIRTUAL_TERMINAL_PROCESSING` on the stderr console handle.
@@ -1363,11 +1365,23 @@ fn cursor_style_policy(cursor_blink: Option<bool>) -> CursorStylePolicy {
         Some(false) => CursorStylePolicy::ForceSteady,
     }
 }
+/// Outcome of [`init_terminal`]: the live terminal, the effective screen mode,
+/// and any startup type-ahead captured after raw mode was enabled.
+pub(crate) struct TerminalInit {
+    pub terminal: PagerTerminal,
+    /// The *effective* screen mode, which may differ from the requested one (see
+    /// [`init_terminal`]).
+    pub screen_mode: ScreenMode,
+    /// Keystrokes the user typed while the app was still loading, captured by the
+    /// post-raw-mode drains; replayed into the composer by [`event_loop::run`].
+    pub startup_typeahead: Vec<event_loop::TimedInputEvent>,
+}
 /// Initialize the terminal for `mode`. Returns the live terminal handle and the
 /// *effective* screen mode, which may differ from the requested one: a
 /// `Minimal` request downgrades to `Inline` if the inline-viewport probe fails
 /// (its `insert_before` / `set_viewport_height` commit pipeline is a no-op on
-/// the `Viewport::Fixed` fallback, so minimal cannot function there).
+/// the `Viewport::Fixed` fallback, so minimal cannot function there). Also
+/// returns any startup type-ahead captured by the post-raw-mode drains.
 fn init_terminal(
     mode: ScreenMode,
     minimal_live_rows: u16,
@@ -1375,14 +1389,17 @@ fn init_terminal(
     frame_tx: crate::render::draw::WriterSender,
     writer_sync: crate::render::draw::WriterSync,
     cursor_blink: Option<bool>,
-) -> io::Result<(PagerTerminal, ScreenMode)> {
+) -> io::Result<TerminalInit> {
     xai_crash_handler::enable_terminal_escape_restore();
     terminal::enable_raw_mode()?;
     #[cfg(windows)]
     configure_windows_console();
     let want_minimal = mode.is_minimal();
-    (move || -> io::Result<(PagerTerminal, ScreenMode)> {
-        drain_pending_events();
+    let mut startup_typeahead: Vec<event_loop::TimedInputEvent> = Vec::new();
+    let (terminal, screen_mode) = (|| -> io::Result<(PagerTerminal, ScreenMode)> {
+        startup_typeahead.extend(event_loop::capture_startup_typeahead(
+            std::time::Duration::from_millis(0),
+        ));
         set_terminal_title("");
         if want_minimal && clear_main_screen {
             xai_grok_shell::util::with_locked_stderr(|stderr| {
@@ -1440,7 +1457,7 @@ fn init_terminal(
         } else {
             std::time::Duration::ZERO
         };
-        drain_pending_events_with_timeout(drain_timeout);
+        startup_typeahead.extend(event_loop::capture_startup_typeahead(drain_timeout));
         crate::theme::apply_cursor_color();
         let ctx = crate::terminal::terminal_context();
         let skip_reason: Option<&str> =
@@ -1559,6 +1576,11 @@ fn init_terminal(
         let _ = terminal::disable_raw_mode();
         signal_handler::mark_restored();
         xai_crash_handler::disable_terminal_escape_restore();
+    })?;
+    Ok(TerminalInit {
+        terminal,
+        screen_mode,
+        startup_typeahead,
     })
 }
 /// Drop the terminal (closing the writer mpsc channel) and join the
@@ -1651,7 +1673,7 @@ fn restore_terminal_with(
     let inline_cursor_row = (!mode.is_fullscreen()).then(|| terminal.viewport_area().bottom());
     let drain_result = drain(terminal, writer_thread);
     teardown(mode, inline_cursor_row);
-    drain_pending_events_with_timeout(std::time::Duration::from_millis(10));
+    let _ = event_loop::drain_pending_events(std::time::Duration::from_millis(10), |_| false);
     let _ = terminal::disable_raw_mode();
     signal_handler::mark_restored();
     xai_crash_handler::disable_terminal_escape_restore();
@@ -1952,6 +1974,25 @@ mod tests {
         let args = try_parse_pager(&["grok-pager", "--no-leader"]).unwrap();
         assert!(!args.leader);
         assert!(args.no_leader);
+    }
+    #[test]
+    fn cli_hidden_memory_compat_flags_parse_and_collapse() {
+        let enabled = try_parse_pager(&["grok-pager", "--experimental-memory"]).unwrap();
+        assert_eq!(enabled.memory_enabled_override(), Some(true));
+        assert_eq!(
+            enabled.memory_override_flag(),
+            Some("--experimental-memory")
+        );
+        let disabled = try_parse_pager(&["grok-pager", "--no-memory"]).unwrap();
+        assert_eq!(disabled.memory_enabled_override(), Some(false));
+        assert_eq!(disabled.memory_override_flag(), Some("--no-memory"));
+        let deferred = try_parse_pager(&["grok-pager"]).unwrap();
+        assert_eq!(deferred.memory_enabled_override(), None);
+        assert_eq!(deferred.memory_override_flag(), None);
+    }
+    #[test]
+    fn cli_hidden_memory_compat_flags_conflict() {
+        assert!(try_parse_pager(&["grok-pager", "--experimental-memory", "--no-memory"]).is_err());
     }
     #[test]
     fn cli_neither_leader_flag_defaults_false() {

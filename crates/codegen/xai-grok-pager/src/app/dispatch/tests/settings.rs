@@ -1555,6 +1555,17 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
             let away = !crate::appearance::cache::load_combine_queued_prompts();
             let _ = dispatch(Action::SetCombineQueuedPrompts(away), app);
         }
+        "follow_up_behavior" => {
+            let away = match crate::appearance::cache::load_follow_up_behavior() {
+                crate::appearance::FollowUpBehavior::Queue => {
+                    crate::appearance::FollowUpBehavior::Steer
+                }
+                crate::appearance::FollowUpBehavior::Steer => {
+                    crate::appearance::FollowUpBehavior::Queue
+                }
+            };
+            let _ = dispatch(Action::SetFollowUpBehavior(away), app);
+        }
         "simple_mode" => {
             let _ = dispatch(Action::SetSimpleMode(false), app);
         }
@@ -1634,7 +1645,7 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
             let _ = dispatch(Action::SetVimMode(true), app);
         }
         "remember_tool_approvals" => {
-            let _ = dispatch(Action::SetRememberToolApprovals(true), app);
+            let _ = dispatch(Action::SetRememberToolApprovals(false), app);
         }
         "toolset.ask_user_question.timeout_enabled" => {
             let _ = dispatch(Action::SetAskUserQuestionTimeoutEnabled(false), app);

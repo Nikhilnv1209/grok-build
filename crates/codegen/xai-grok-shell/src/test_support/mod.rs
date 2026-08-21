@@ -25,6 +25,33 @@ fn redirect_unified_log_for_tests() {
     xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
 }
 
+/// Pre-main hermetic bootstrap, run before any test (and before the harness
+/// spawns worker threads):
+///
+/// 1. jsonwebtoken 10 refuses to guess a CryptoProvider when more than one
+///    backend feature is enabled in the unified dep graph — product paths
+///    install it lazily, but whichever test runs first would otherwise panic
+///    depending on alphabetical order. Install deterministically here.
+/// 2. Unset the built-in provider API-key env vars. The dev machine may
+///    legitimately export them (env-based connect), which leaks hydrated
+///    provider rows / BYOK credentials into tests that assert "no external
+///    credentials". Tests that need them set explicit values via `EnvGuard`.
+#[ctor::ctor]
+fn hermetic_test_bootstrap() {
+    let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();
+    for key in [
+        "UMANS_AI_CODING_PLAN_API_KEY",
+        "UMANS_AI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENCODE_API_KEY",
+        "CMD_API_KEY",
+    ] {
+        // SAFETY: ctor runs pre-main on a single thread; no other thread can
+        // read the environment concurrently.
+        unsafe { std::env::remove_var(key) };
+    }
+}
+
 /// Prepend the hermetic git binary (via `GIT_BIN_PATH`) to `PATH` so that
 /// `Command::new("git")` in test helpers resolves to the Bazel-provided
 /// static binary instead of relying on system-installed git.

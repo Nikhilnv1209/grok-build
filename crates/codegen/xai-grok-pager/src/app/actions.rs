@@ -7,6 +7,7 @@
 //! - [`Effect`] — produced by dispatch, consumed by the event loop (async).
 //! - [`TaskResult`] — produced by spawned tasks, fed back into dispatch.
 use super::agent::AgentId;
+use crate::app::status_line::StatusLineRun;
 use crate::scrollback::entry::EntryId;
 use agent_client_protocol as acp;
 use xai_grok_shell::sampling::types::ReasoningEffort;
@@ -254,6 +255,20 @@ pub enum Action {
         /// the original server-side text, not the edit. Atomicity semantics
         /// live on [`Effect::QueueInterject`].
         new_text: Option<String>,
+    },
+    /// A queued-row edit whose saved text is a complete pager builtin invocation: drop the row,
+    /// then run the command through the normal slash dispatch. The view only classifies; dispatch
+    /// stays the sole execution owner, and it removes the row only after its own guards pass, so a
+    /// failed run leaves the row queued.
+    RunEditedQueuedCommand {
+        /// `PromptMode::EditingQueued.id`: the local `pending_prompts` id, or the synthesized
+        /// selection id for a server row (unused there).
+        local_id: u64,
+        /// `Some` for a server-authoritative row. `None` covers both a local row and a server row
+        /// that vanished from the mirror before Enter: with nothing to remove, no versioned
+        /// `x.ai/queue/remove` request is sent.
+        server: Option<SharedQueueTarget>,
+        text: String,
     },
     /// Focus the prompt pane.
     FocusPrompt,
@@ -548,6 +563,9 @@ pub enum Action {
     /// drain site) and persists to `[ui].combine_queued_prompts` via
     /// `Effect::PersistSetting`.
     SetCombineQueuedPrompts(bool),
+    /// Mid-turn follow-up routing (`queue` | `steer`).
+    /// SHARED-owned: `[ui].follow_up_behavior`.
+    SetFollowUpBehavior(crate::appearance::FollowUpBehavior),
     /// Set simple mode (ASCII / minimal glyphs). Persists via `Effect::PersistSetting`.
     SetSimpleMode(bool),
     /// Set the per-tip contextual-hint user config (`[ui.contextual_hints]`).
@@ -679,6 +697,11 @@ pub enum Action {
     /// workspace, mark trust resolved, and replay any deferred session startup.
     /// (Declining quits via [`Action::Quit`]; there is no decline action.)
     TrustFolder,
+    /// Replays any session startup deferred behind the notice.
+    /// (Declining quits via [`Action::Quit`]; there is no decline action.)
+    AcceptConsent,
+    /// Opens the notice's nth link. The url is re-read from validated state, never carried here.
+    OpenConsentLink(usize),
     /// A spawned task completed.
     TaskComplete(TaskResult),
     /// Share the current session via URL.
@@ -1021,6 +1044,12 @@ pub enum Action {
     JumpPickerSelect(EntryId),
     /// Close the picker and restore the stashed viewport.
     JumpDismiss,
+}
+/// A server-authoritative queue row plus the version its removal is checked against.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedQueueTarget {
+    pub id: String,
+    pub expected_version: u64,
 }
 /// Persist-and-notify semantics for [`Effect::PersistPermissionMode`].
 ///
@@ -1402,6 +1431,8 @@ pub enum AfterSessionDelete {
 /// [`TaskResult`] as `Action::TaskComplete`.
 #[derive(Debug)]
 pub enum Effect {
+    /// Run a `command` status line.
+    RunStatusLineCommand(StatusLineRun),
     /// Create a new ACP session.
     CreateSession {
         agent_id: AgentId,
@@ -1462,7 +1493,7 @@ pub enum Effect {
     /// Scan enabled foreign session stores without delaying the native list.
     ScanForeignSessions {
         cwd: std::path::PathBuf,
-        compat: xai_grok_workspace::foreign_sessions::EnabledForeignSessionSources,
+        compat: xai_grok_foreign_sessions::EnabledForeignSessionSources,
         grok_home: std::path::PathBuf,
         coordinator: crate::app::ForeignScanCoordinator,
         seq: u64,
@@ -1475,7 +1506,7 @@ pub enum Effect {
     /// Detect the newest resumable foreign session without delaying first paint.
     DetectForeignResumeHint {
         canonical_cwd: std::path::PathBuf,
-        compat: xai_grok_workspace::foreign_sessions::EnabledForeignSessionSources,
+        compat: xai_grok_foreign_sessions::EnabledForeignSessionSources,
         grok_home: std::path::PathBuf,
         launch_token: u64,
     },
@@ -1554,14 +1585,9 @@ pub enum Effect {
         /// `mid_turn_abort` telemetry can distinguish them. `None` for
         /// programmatic cancels (login/reauth flows).
         trigger: Option<CancelTrigger>,
-        /// Ask the shell to trim the in-flight prompt from session history when
-        /// the turn has produced no output yet, sent as
-        /// `_meta.rewindIfNoOutput`. Set true ONLY when the pager has locally
-        /// rewound the prompt back into the composer, so the shell's history
-        /// matches the UI. Without it the shell keeps the prompt plus an
-        /// interruption marker, and a later resend pairs the kept copy with the
-        /// resend — the send+Ctrl+C double-prompt bug.
-        rewind_if_no_output: bool,
+        /// `_meta.rewindIfNoOutput` + `_meta.promptId` of the locally rewound turn.
+        /// Set only when the pager restored the prompt into the composer.
+        rewind_prompt_id: Option<String>,
     },
     /// Run a manual `/compact` command.
     Compact {
@@ -1572,6 +1598,7 @@ pub enum Effect {
     KillBgTask {
         session_id: acp::SessionId,
         task_id: String,
+        source: xai_grok_shell::extensions::task::TaskKillSource,
     },
     /// Cancel a subagent via `x.ai/subagent/cancel`.
     KillSubagent {
@@ -1609,6 +1636,15 @@ pub enum Effect {
     },
     /// Persist `[privacy].privacy_banner_acked` (RFC 3339 dismiss time).
     PersistPrivacyBannerAcked { acked_at: String },
+    /// Persist the consent answer to `[consent]` in config.toml.
+    PersistConsentAnswer {
+        account: Option<String>,
+        notice_id: String,
+        version: i32,
+        acked: bool,
+    },
+    /// Files the acceptance server side; the local marker is what stops the re-prompt if it fails.
+    RecordConsentUpstream { notice_id: String, version: i32 },
     /// Persist memory modal fullscreen preference to `[hints]` in config.toml.
     PersistMemoryFullscreen { fullscreen: bool },
     /// Persist the dashboard's `[dashboard]` configuration to `~/.grok/config.toml`.
@@ -2284,6 +2320,11 @@ impl TaskResult {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum TaskResult {
+    /// A `command` status line finished.
+    StatusLineCommandFinished {
+        id: crate::app::status_line::RunId,
+        outcome: crate::app::status_line::RunOutcome,
+    },
     /// Session was created successfully.
     SessionCreated {
         agent_id: AgentId,
@@ -2401,7 +2442,7 @@ pub enum TaskResult {
     ForeignResumeHintDetected {
         canonical_cwd: std::path::PathBuf,
         launch_token: u64,
-        hint: Option<xai_grok_workspace::foreign_sessions::RecentForeignSession>,
+        hint: Option<xai_grok_foreign_sessions::RecentForeignSession>,
     },
     /// Session list fetch failed.
     SessionListFailed {
@@ -2489,6 +2530,16 @@ pub enum TaskResult {
     /// Cancel notification was sent (fire-and-forget).
     /// The real turn end comes via PromptResponse.
     CancelComplete,
+    /// The marker can stop advertising itself as unsent.
+    ConsentRecorded {
+        notice_id: String,
+        version: i32,
+    },
+    /// The answer stands for this run, but nothing on disk holds it,
+    /// so the notice returns at the next launch.
+    ConsentPersistFailed {
+        error: String,
+    },
     /// Response to `x.ai/subagent/cancel`; see [`SubagentKillOutcome`].
     KillSubagentComplete {
         session_id: acp::SessionId,
@@ -2684,7 +2735,10 @@ pub enum TaskResult {
         agent_id: AgentId,
         session_id: acp::SessionId,
         info: Box<xai_grok_shell::session::SessionInfoResponse>,
+        /// Plain-text block for minimal-mode scrollback.
         text: String,
+        /// Structured rows for the modal (built upstream from typed data).
+        fields: Vec<crate::views::usage_modal::SessionInfoField>,
         nonce: u64,
     },
     /// Session info fetch failed.

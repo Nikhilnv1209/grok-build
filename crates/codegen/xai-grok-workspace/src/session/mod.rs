@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use xai_computer_hub_mcp_adapter::McpBridgeHandle;
 use xai_grok_mcp::servers::McpState;
-use xai_grok_tools::notification::types::{ToolNotification, ToolNotificationHandle};
+use xai_grok_tools::notification::AcknowledgedToolNotification;
+use xai_grok_tools::notification::types::ToolNotificationHandle;
 use xai_grok_tools::registry::types::{FinalizedToolset, ToolConfig, ToolServerConfig};
 use xai_hunk_tracker::HunkTrackerHandle;
 use xai_tool_protocol::ToolId;
@@ -129,8 +130,9 @@ pub struct WorkspaceSession {
     system_notify_handle: Option<ToolNotificationHandle>,
     /// Receiver paired with `system_notify_handle`, taken once by the forwarder.
     #[allow(dead_code)]
-    pending_notif_rx:
-        tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ToolNotification>>>,
+    pending_notif_rx: tokio::sync::Mutex<
+        Option<tokio::sync::mpsc::UnboundedReceiver<AcknowledgedToolNotification>>,
+    >,
     /// Spawned system-notify producers (forwarder, preview-state watcher).
     /// Sync mutex so the sync teardown path can abort without an await.
     system_notify_producers: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -167,7 +169,7 @@ impl WorkspaceSession {
         #[allow(dead_code)] system_notifications: bool,
         system_notify_channel: Option<(
             ToolNotificationHandle,
-            tokio::sync::mpsc::UnboundedReceiver<ToolNotification>,
+            tokio::sync::mpsc::UnboundedReceiver<AcknowledgedToolNotification>,
         )>,
     ) -> Self {
         let (system_notify_handle, pending_notif_rx) = match system_notify_channel {
@@ -223,12 +225,11 @@ impl WorkspaceSession {
     pub(crate) fn system_notify_handle(&self) -> Option<ToolNotificationHandle> {
         self.system_notify_handle.clone()
     }
-    /// Take the stashed notification receiver (once) for the per-session
-    /// forwarder to own.
+    /// Hand the notification receiver to the forwarder. Works once.
     #[allow(dead_code)]
     pub(crate) async fn take_pending_notif_rx(
         &self,
-    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<ToolNotification>> {
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<AcknowledgedToolNotification>> {
         self.pending_notif_rx.lock().await.take()
     }
     /// True once a producer set has been tracked; finalize spawns at most one
@@ -521,6 +522,8 @@ pub struct WorkspaceShared {
     pub(crate) client_ext_sink: arc_swap::ArcSwap<Option<ClientExtSink>>,
     pub(crate) local_registry: xai_computer_hub_sdk::LocalRegistry,
     pub(crate) activity_tracker: std::sync::Arc<crate::activity::ActivityTracker>,
+    /// True after the scheduler-liveness poll task started; reconnects must not start a second one.
+    pub(crate) scheduler_poll_started: std::sync::atomic::AtomicBool,
     /// Runtime-tunable timing/threshold config for the tool server.
     /// Read by the status publisher task and at shutdown.
     pub(crate) status_config: crate::status_config::StatusConfig,
@@ -552,7 +555,7 @@ pub struct WorkspaceShared {
     /// Whether per-session `events.jsonl` recording is enabled
     /// (`GROK_WORKSPACE_EVENTS_ENABLED=true`). When `false`, every
     /// [`session_event_writer`](Self::session_event_writer) hands back an
-    /// [`EventWriter::noop()`](xai_file_utils::events::EventWriter::noop) and
+    /// [`EventWriter::noop()`](xai_grok_session_events::EventWriter::noop) and
     /// no session directory or `events.jsonl` is ever created — the legacy
     /// behaviour, preserved bit-for-bit.
     pub(crate) events_enabled: bool,
@@ -568,7 +571,7 @@ pub struct WorkspaceShared {
     /// `Tool*` events resolve the right writer without a back-reference to
     /// `WorkspaceShared`. Stays empty whenever `events_enabled` is `false`.
     pub(crate) session_event_writers:
-        Arc<dashmap::DashMap<String, xai_file_utils::events::EventWriter>>,
+        Arc<dashmap::DashMap<String, xai_grok_session_events::EventWriter>>,
     /// In-flight before-turn enqueue tasks, keyed by `(session_id, turn)`.
     /// Stored by `on_before_turn`; evicted on every turn-end path. The `After`
     /// turn-hook handler awaits the handle for its ack's `artifact_count`; the
@@ -612,14 +615,14 @@ impl WorkspaceShared {
     /// `workspace_home/sessions/{session_id}/`.
     ///
     /// When `events_enabled` is `false` this returns
-    /// [`EventWriter::noop()`](xai_file_utils::events::EventWriter::noop)
+    /// [`EventWriter::noop()`](xai_grok_session_events::EventWriter::noop)
     /// WITHOUT touching the cache or the filesystem, so the flag-off path stays
     /// byte-for-byte identical to the legacy behaviour. The returned handle is
     /// `Clone + Send + Sync`; callers emit through it directly.
     pub(crate) fn session_event_writer(
         &self,
         session_id: &str,
-    ) -> xai_file_utils::events::EventWriter {
+    ) -> xai_grok_session_events::EventWriter {
         get_or_open_session_writer(
             self.events_enabled,
             &self.session_event_writers,
@@ -633,7 +636,7 @@ impl WorkspaceShared {
     pub(crate) fn session_event_writer_cached(
         &self,
         session_id: &str,
-    ) -> Option<xai_file_utils::events::EventWriter> {
+    ) -> Option<xai_grok_session_events::EventWriter> {
         if !self.events_enabled {
             return None;
         }
@@ -913,11 +916,11 @@ impl WorkspaceShared {
 ///   existing `events.jsonl` rather than truncating it.
 pub(crate) fn get_or_open_session_writer(
     enabled: bool,
-    writers: &dashmap::DashMap<String, xai_file_utils::events::EventWriter>,
+    writers: &dashmap::DashMap<String, xai_grok_session_events::EventWriter>,
     workspace_home: &Path,
     session_id: &str,
-) -> xai_file_utils::events::EventWriter {
-    use xai_file_utils::events::EventWriter;
+) -> xai_grok_session_events::EventWriter {
+    use xai_grok_session_events::EventWriter;
     if !enabled {
         return EventWriter::noop();
     }
@@ -947,7 +950,7 @@ pub(crate) fn get_or_open_session_writer(
 mod tests {
     use super::get_or_open_session_writer;
     use dashmap::DashMap;
-    use xai_file_utils::events::{Event, EventWriter};
+    use xai_grok_session_events::{Event, EventWriter};
     fn count_lines(path: &std::path::Path) -> usize {
         std::fs::read_to_string(path)
             .unwrap()

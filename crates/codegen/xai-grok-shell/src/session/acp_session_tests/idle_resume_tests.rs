@@ -92,7 +92,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
             let state = TokioMutex::new(State {
                 running_task: None,
                 pending_inputs: VecDeque::new(),
-                combine_edit_holds: std::collections::HashSet::new(),
+                edit_holds: HashMap::new(),
                 pending_notifications: Vec::new(),
                 notifications_suppressed: false,
                 rewindable: false,
@@ -130,6 +130,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
             });
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let actor = SessionActor {
+                status_wake: Default::default(),
                 session_info: SessionInfo {
                     id: acp::SessionId::new("test-idle-resume"),
                     cwd: cwd.as_str().to_string(),
@@ -243,6 +244,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 agent: std::cell::RefCell::new(test_agent_default().await),
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
                 git_head_enabled: false,
+                status_line_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 models_manager: Default::default(),
                 display_cwd: std::sync::OnceLock::new(),
                 active_agent_type: parking_lot::Mutex::new(None),
@@ -297,6 +299,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 mcp_handshakes_done: Arc::new(tokio::sync::Notify::new()),
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
+                last_live_orphan_reconcile: std::cell::Cell::new(None),
                 deferred_prefix: TaskSlot::new(),
                 extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
@@ -304,6 +307,9 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
                 hook_registry: std::cell::RefCell::new(None),
+                turn_report: Default::default(),
+                turn_abort: Default::default(),
+                turn_end_tx: Default::default(),
                 client_hooks: Default::default(),
                 hook_resolved_workspace_root: String::new(),
                 vcs_kind: xai_grok_workspace::session::git::VcsKind::Git,
@@ -318,10 +324,15 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 recap_epoch: std::cell::Cell::new(0),
                 turn_summary_task: std::cell::RefCell::new(None),
                 turn_summary_generation: std::cell::Cell::new(0),
+                title_refresh_task: std::cell::RefCell::new(None),
+                title_refresh_generation: std::cell::Cell::new(0),
+                next_title_refresh_idx: std::cell::Cell::new(0),
                 turn_summary_enabled: false,
+                title_refresh_enabled: false,
                 session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
                 turn_stream_drained: parking_lot::Mutex::new(None),
+                pending_image_strip: parking_lot::Mutex::new(None),
                 sampler_handle: xai_grok_sampler::SamplerHandle::noop(),
                 rebuild_spec: crate::session::agent_rebuild::test_rebuild_spec_default(),
                 image_description_model: crate::test_support::TEST_MODEL.to_owned(),

@@ -106,8 +106,12 @@ pub(crate) fn format_request_failure(
     });
     let extracted = extract_error_detail(raw);
     let class = classify(status, wire);
+    // The server's own words beat generic copy even on server faults (a 502
+    // body saying "upstream connect error" beats "The server had a problem").
+    // Noise-classified bodies ("overloaded", "request too large", …) fall
+    // through to the canned per-status copy, which reads better than echoes.
     let why = extracted
-        .filter(|d| !is_server_fault(status, wire) && !is_headline_echo(d, &class.headline))
+        .filter(|d| !is_headline_echo(d, &class.headline))
         .or_else(|| class.default_why.map(str::to_string));
     let detail = compose_detail(why.as_deref(), class.action);
     FormattedRequestFailure {
@@ -263,17 +267,9 @@ fn compose_detail(why: Option<&str>, action: Option<&str>) -> String {
     }
 }
 
-/// Server-fault responses (5xx and their wire equivalents) carry internal
-/// detail ("upstream exploded") users can't act on — always use our copy.
-/// 429 stays client-side: its body may explain plan limits.
-fn is_server_fault(status: Option<u16>, wire: WireErrorType) -> bool {
-    match status {
-        Some(code) => code >= 500,
-        // The wire type `classify` headlines as "Server error".
-        None => wire == WireErrorType::Api,
-    }
-}
-
+/// Server-fault responses (5xx) used to force generic copy here; since the
+/// banner now prefers the server's own detail, classification no longer
+/// needs this predicate.
 /// The server body restates the headline (e.g. "Not Found" under a 404).
 fn is_headline_echo(detail: &str, headline: &str) -> bool {
     let detail = normalize_phrase(detail);
@@ -554,15 +550,34 @@ mod tests {
         );
         assert_eq!(formatted.status, Some(500));
         assert_eq!(formatted.headline, "Server error (500)");
-        assert_eq!(
-            formatted.detail,
-            "Something went wrong on our side. Wait a minute and send again."
+        // The server's own detail now survives on 5xx: "upstream exploded"
+        // is the actionable fact, generic copy is only the last resort.
+        assert!(
+            formatted.detail.contains("upstream exploded"),
+            "server detail must survive on 5xx: {}",
+            formatted.detail
         );
-        assert_eq!(
-            formatted.message(),
-            "Server error (500) \u{2014} Something went wrong on our side. Wait a minute and send again."
+    }
+
+    /// Long errors must not be tail-chopped into "..." — the tail is where
+    /// the actual cause lives ("Request failed after N retries. …<cut>").
+    #[test]
+    fn long_errors_are_not_truncated_with_ellipsis() {
+        let long = format!(
+            "API error (status 502): {}",
+            "x".repeat(400)
         );
-        assert!(!formatted.message().contains("exploded"));
+        let sanitized = crate::app::effects::sanitize_user_error(&long);
+        assert!(!sanitized.ends_with('\u{2026}') && !sanitized.ends_with("..."));
+        assert_eq!(sanitized.chars().count(), long.chars().count());
+
+        let raw_only = format!("API error (status 503): {}", "y".repeat(300));
+        let formatted = format_request_failure(None, Some("api"), &raw_only);
+        assert!(
+            formatted.detail.contains('y'),
+            "detail must keep the server text: {}",
+            formatted.detail
+        );
     }
 
     /// A parsed provider reason on a 4xx survives the banner formatting

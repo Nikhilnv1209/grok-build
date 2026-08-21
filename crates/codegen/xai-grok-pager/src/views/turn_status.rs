@@ -188,7 +188,7 @@ pub fn is_sendable_wait(activity: &Option<TurnActivity>) -> bool {
             WaitingReason::TaskOutput { waits: true, .. }
                 | WaitingReason::TasksComplete
                 | WaitingReason::Sleep
-                | WaitingReason::Subagent
+                | WaitingReason::Subagent { .. }
         ))
     )
 }
@@ -710,9 +710,17 @@ fn compute_activity(
             "Compacting…".to_string(),
             false,
         ),
-        (AgentState::TurnRunning, Some(TurnActivity::Retrying { attempt, .. })) => (
+        (AgentState::TurnRunning, Some(TurnActivity::Retrying { attempt, reason, .. })) => (
             Style::default().fg(theme.warning),
-            format!("Retrying (attempt {attempt})…"),
+            format!(
+                "Retrying (attempt {attempt}) · {}…",
+                crate::acp::tracker::clamp_activity_subject(reason)
+            ),
+            false,
+        ),
+        (AgentState::TurnRunning, Some(TurnActivity::WritingToolCall(writing))) => (
+            Style::default().fg(theme.text_secondary),
+            writing.label(),
             false,
         ),
         (AgentState::TurnRunning, Some(TurnActivity::Waiting(reason))) => (
@@ -901,7 +909,7 @@ mod tests {
             WaitingReason::Model
         ))));
         assert!(
-            is_sendable_wait(&Some(TurnActivity::Waiting(WaitingReason::Subagent))),
+            is_sendable_wait(&Some(TurnActivity::Waiting(WaitingReason::subagent()))),
             "the shell aborts a blocked foreground subagent await on send-now, \
              so Enter during it must read as sendable"
         );
@@ -969,12 +977,45 @@ mod tests {
     }
 
     #[test]
+    fn retry_label_shows_attempt_and_cause() {
+        let theme = Theme::current();
+        let activity = TurnActivity::Retrying {
+            attempt: 2,
+            max_retries: 5,
+            reason: "connection reset by peer".to_owned(),
+        };
+        let (style, label, _) =
+            compute_activity(&theme, &AgentState::TurnRunning, &Some(activity), false, false);
+        assert_eq!(label, "Retrying (attempt 2) · connection reset by peer…");
+        assert_eq!(style.fg, Some(theme.warning));
+
+        // Long causes clamp instead of flooding the status row.
+        let long = "x".repeat(120);
+        let activity = TurnActivity::Retrying {
+            attempt: 1,
+            max_retries: 3,
+            reason: long.clone(),
+        };
+        let (_, label, _) =
+            compute_activity(&theme, &AgentState::TurnRunning, &Some(activity), false, false);
+        assert!(label.starts_with("Retrying (attempt 1) · "));
+        assert!(label.contains(&"x".repeat(40)));
+        assert!(!label.contains(&long));
+    }
+
+    #[test]
     fn waiting_reason_renders_specific_label() {
         use crate::acp::tracker::WaitingReason;
         let theme = Theme::current();
         let cases = [
             (WaitingReason::Model, "Waiting for response…"),
-            (WaitingReason::Subagent, "Waiting on subagent…"),
+            (WaitingReason::subagent(), "Waiting on subagent…"),
+            (
+                WaitingReason::Subagent {
+                    display: Some("fix flaky test: Running: cargo test".into()),
+                },
+                "fix flaky test: Running: cargo test…",
+            ),
             (WaitingReason::task_output(), "Waiting on task output…"),
             (
                 WaitingReason::TaskOutput {
@@ -1555,7 +1596,7 @@ mod tests {
 
     #[test]
     fn queued_hint_renders_after_phase_timer() {
-        let activity = Some(TurnActivity::Waiting(WaitingReason::Subagent));
+        let activity = Some(TurnActivity::Waiting(WaitingReason::subagent()));
         let mut args = idle_args(Watchers::default());
         args.state = &AgentState::TurnRunning;
         args.activity = &activity;
