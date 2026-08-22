@@ -21,8 +21,8 @@ use xai_grok_sampler::AuthScheme;
 use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
 
 pub use catalog::{
-    base_url, builtin_providers, commandcode_cache_path, commandcode_models, snapshot_models,
-    ProviderSpec,
+    base_url, builtin_providers, commandcode_cache_path, commandcode_models,
+    fetch_models_dev_blocking, models_dev_live_cache_path, snapshot_models, ProviderSpec,
 };
 
 const PROVIDER_SCOPE_PREFIX: &str = "provider:";
@@ -98,33 +98,116 @@ pub fn provider_models(spec: &ProviderSpec) -> Vec<ProviderModel> {
     }
 }
 
-/// Refetch a provider's `/v1/models` list and persist it to the models-dev
-/// cache. Currently meaningful only for Command Code; returns without writing
-/// for snapshot-backed providers.
+/// Refetch a provider's live catalog and persist it to the on-disk cache.
+/// Snapshot-backed providers (Umans/DeepSeek/OpenCode) share one models.dev
+/// download; Command Code fetches its own `/v1/models` with the given key.
 pub fn refresh_provider_models(spec: &ProviderSpec, api_key: &str) -> anyhow::Result<()> {
-    if spec.id != "commandcode" {
+    if spec.id == "commandcode" {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()?;
+        let response = client
+            .get(format!("{}/models", base_url(spec)))
+            .header("Authorization", format!("Bearer {}", api_key.trim()))
+            .send()?;
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "Command Code /models returned {} — check your API key.",
+                response.status()
+            );
+        }
+        let body = response.text()?;
+        let models = commandcode_models(Some(&body));
+        if models.is_empty() {
+            anyhow::bail!("Command Code /models returned no models");
+        }
+        std::fs::write(commandcode_cache_path(), body)?;
         return Ok(());
     }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
-    let response = client
-        .get(format!("{}/models", base_url(spec)))
-        .header("Authorization", format!("Bearer {}", api_key.trim()))
-        .send()?;
-    if !response.status().is_success() {
-        anyhow::bail!(
-            "Command Code /models returned {} — check your API key.",
-            response.status()
-        );
-    }
-    let body = response.text()?;
-    let models = commandcode_models(Some(&body));
-    if models.is_empty() {
-        anyhow::bail!("Command Code /models returned no models");
-    }
-    std::fs::write(commandcode_cache_path(), body)?;
+    // Snapshot-backed: one shared models.dev download covers them all.
+    catalog::fetch_models_dev_blocking()?;
     Ok(())
+}
+
+/// Result of refreshing one provider inside
+/// [`refresh_connected_providers_blocking`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderRefreshStatus {
+    /// Live catalog fetched; this many models are now resolvable.
+    Refreshed { models: usize },
+    /// Provider has no stored key and no env key, so there is nothing to
+    /// authenticate a refresh with.
+    SkippedNotConnected,
+    /// The network or parse step failed.
+    Failed { error: String },
+}
+
+/// One provider's refresh result, in registry order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRefreshOutcome {
+    pub provider_id: &'static str,
+    pub status: ProviderRefreshStatus,
+}
+
+impl ProviderRefreshOutcome {
+    pub fn is_refreshed(&self) -> bool {
+        matches!(self.status, ProviderRefreshStatus::Refreshed { .. })
+    }
+}
+
+/// Refresh every connected provider's live catalog (blocking — call from a
+/// background thread). Umans/DeepSeek/OpenCode share a single models.dev
+/// fetch; Command Code uses its stored/env key. Providers that are not
+/// connected are reported as skipped so the UI can say why nothing happened.
+pub fn refresh_connected_providers_blocking() -> Vec<ProviderRefreshOutcome> {
+    let mut outcomes = Vec::new();
+    let mut models_dev_done = false;
+    for spec in builtin_providers() {
+        if !is_connected(spec) || (spec.models_dev_ids.is_empty() && spec.id != "commandcode") {
+            outcomes.push(ProviderRefreshOutcome {
+                provider_id: spec.id,
+                status: ProviderRefreshStatus::SkippedNotConnected,
+            });
+            continue;
+        }
+        let result = if spec.id == "commandcode" {
+            let key = read_stored_key(spec.id).or_else(|| {
+                set_env_names(spec)
+                    .first()
+                    .and_then(|name| std::env::var(name).ok())
+            });
+            match key {
+                Some(key) => refresh_provider_models(spec, &key),
+                None => Err(anyhow::anyhow!(
+                    "no API key found (auth.json or {})",
+                    spec.env_keys.join(" or ")
+                )),
+            }
+        } else {
+            // Dedupe the shared models.dev download across providers.
+            if models_dev_done {
+                Ok(()) as anyhow::Result<()>
+            } else {
+                models_dev_done = true;
+                refresh_provider_models(spec, "")
+            }
+        };
+        match result {
+            Ok(()) => outcomes.push(ProviderRefreshOutcome {
+                provider_id: spec.id,
+                status: ProviderRefreshStatus::Refreshed {
+                    models: provider_models(spec).len(),
+                },
+            }),
+            Err(error) => outcomes.push(ProviderRefreshOutcome {
+                provider_id: spec.id,
+                status: ProviderRefreshStatus::Failed {
+                    error: error.to_string(),
+                },
+            }),
+        }
+    }
+    outcomes
 }
 
 /// `auth.json` lookup is skipped in `cargo test` unless `GROK_HOME` is set, so

@@ -273,6 +273,7 @@ pub(crate) fn test_app() -> AppView {
         has_claude_import: false,
         import_claude_modal: None,
         welcome_doc_viewer: None,
+        welcome_modal: None,
         screen_mode: ScreenMode::Inline,
         pending_effects: Vec::new(),
         pending_editor: None,
@@ -286,6 +287,7 @@ pub(crate) fn test_app() -> AppView {
         workspace_dashboard_enabled: false,
         usage_visible: true,
         has_external_auth_provider: false,
+        has_any_credential: true,
         tier_restricted_commands: Vec::new(),
         leader_mode: true,
         credit_balance: None,
@@ -3987,6 +3989,58 @@ fn welcome_done_n_starts_session() {
     let mut app = test_app();
     app.auth_state = AuthState::Done;
     let outcome = app.handle_input(&key_event(KeyCode::Char('n'), KeyModifiers::NONE));
+    assert!(matches!(
+        outcome,
+        InputOutcome::ActionThenForward(Action::NewSession)
+    ));
+}
+#[test]
+fn welcome_no_credentials_typing_does_not_start_session() {
+    // Regression: with the login splash suppressed, a zero-credential launch
+    // landed on welcome where every keystroke spawned a session that failed
+    // instantly ("no auth method id provided") — a redraw storm that made
+    // typing impossible. Typing must stay local instead.
+    let mut app = test_app();
+    app.auth_state = AuthState::Done;
+    app.has_any_credential = false;
+    app.welcome_prompt_focused = true;
+    let outcome = app.handle_input(&key_event(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(
+        !matches!(outcome, InputOutcome::ActionThenForward(Action::NewSession)),
+        "gated welcome must not auto-start a session on keystrokes"
+    );
+    assert!(
+        matches!(outcome, InputOutcome::Changed),
+        "keystroke should still reach the local editor, got {outcome:?}"
+    );
+}
+#[test]
+fn welcome_no_credentials_enter_opens_providers_dialog() {
+    let mut app = test_app();
+    app.auth_state = AuthState::Done;
+    app.has_any_credential = false;
+    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Action(Action::OpenProviders)));
+}
+#[test]
+fn welcome_no_credentials_ctrl_p_opens_providers_dialog() {
+    let mut app = test_app();
+    app.auth_state = AuthState::Done;
+    app.has_any_credential = false;
+    let outcome = app.handle_input(&key_event(
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+    ));
+    assert!(matches!(outcome, InputOutcome::Action(Action::OpenProviders)));
+}
+#[test]
+fn welcome_with_credentials_keeps_type_to_open() {
+    // The gate must not disturb the normal path when credentials exist.
+    let mut app = test_app();
+    app.auth_state = AuthState::Done;
+    app.has_any_credential = true;
+    app.welcome_prompt_focused = true;
+    let outcome = app.handle_input(&key_event(KeyCode::Char('x'), KeyModifiers::NONE));
     assert!(matches!(
         outcome,
         InputOutcome::ActionThenForward(Action::NewSession)

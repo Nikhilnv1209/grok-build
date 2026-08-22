@@ -8,6 +8,7 @@
 //! snapshot for offline use.
 
 use std::sync::OnceLock;
+use std::time::SystemTime;
 
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -19,6 +20,7 @@ use xai_grok_sampling_types::ReasoningEffort;
 use super::ProviderModel;
 
 const MODELS_DEV_SNAPSHOT: &str = include_str!("data/models.dev.subset.json");
+const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 // ── Provider specs ─────────────────────────────────────────────────────────
 
@@ -102,13 +104,13 @@ const COMMAND_CODE: ProviderSpec = ProviderSpec {
 // ── models.dev snapshot ────────────────────────────────────────────────────
 
 /// Raw snapshot entries we care about.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ModelsDevSnapshot {
     #[serde(flatten)]
     providers: IndexMap<String, ModelsDevProvider>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ModelsDevProvider {
     #[serde(rename = "api")]
     api: Option<String>,
@@ -116,7 +118,7 @@ struct ModelsDevProvider {
     models: IndexMap<String, ModelsDevModel>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ModelsDevModel {
     #[serde(rename = "id")]
     id: String,
@@ -138,7 +140,7 @@ struct ModelsDevModel {
 
 /// One models.dev `reasoning_options` entry: `{"type":"toggle"}` (reasoning
 /// on/off → low/high) or `{"type":"effort","values":["low","max",…]}`.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ReasoningOption {
     #[serde(rename = "type")]
     r#type: String,
@@ -146,7 +148,7 @@ struct ReasoningOption {
     values: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ModelsDevLimit {
     #[serde(rename = "context")]
     context: Option<u64>,
@@ -154,7 +156,13 @@ struct ModelsDevLimit {
     output: Option<u64>,
 }
 
-fn snapshot() -> &'static ModelsDevSnapshot {
+fn parse_snapshot(json: &str) -> Option<ModelsDevSnapshot> {
+    serde_json::from_str(json)
+        .map_err(|error| tracing::warn!(%error, "models.dev catalog unparseable"))
+        .ok()
+}
+
+fn checked_in_snapshot() -> &'static ModelsDevSnapshot {
     static SNAPSHOT: OnceLock<ModelsDevSnapshot> = OnceLock::new();
     SNAPSHOT.get_or_init(|| {
         serde_json::from_str(MODELS_DEV_SNAPSHOT)
@@ -162,23 +170,112 @@ fn snapshot() -> &'static ModelsDevSnapshot {
     })
 }
 
-/// Resolve a provider's base URL: the models.dev `api` field wins over the
-/// spec default so we never drift from the registry.
-pub fn base_url(spec: &ProviderSpec) -> &'static str {
-    for id in spec.models_dev_ids {
-        if let Some(provider) = snapshot().providers.get(*id) {
-            return provider.api.as_deref().unwrap_or(spec.default_base_url);
-        }
-    }
-    spec.default_base_url
+/// Cache file holding the last fetched models.dev `api.json` body. Written by
+/// `super::refresh_provider_models`; absent until the first successful fetch.
+pub fn models_dev_live_cache_path() -> std::path::PathBuf {
+    xai_grok_config::grok_home().join("models-dev-live.json")
 }
 
-/// All snapshot-backed models for a provider, merged across its models.dev
-/// ids (Umans has both a plan and an org entry). Union by wire id.
+fn live_cache_fingerprint(path: &std::path::Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Memoized parse of the live cache, invalidated when the file changes on
+/// disk. Keyed by (mtime, len) so a refresh write is picked up immediately
+/// without re-parsing the multi-megabyte body on every model resolution.
+fn cached_live_snapshot(
+    path: &std::path::Path,
+    fingerprint: (SystemTime, u64),
+) -> Option<std::sync::Arc<ModelsDevSnapshot>> {
+    struct LiveParse {
+        fingerprint: (SystemTime, u64),
+        snapshot: std::sync::Arc<ModelsDevSnapshot>,
+    }
+    static LIVE: OnceLock<std::sync::Mutex<Option<LiveParse>>> = OnceLock::new();
+    let cell = LIVE.get_or_init(|| std::sync::Mutex::new(None));
+    let mut guard = cell.lock().ok()?;
+    if guard.as_ref().is_some_and(|e| e.fingerprint == fingerprint) {
+        return Some(guard.as_ref().expect("checked above").snapshot.clone());
+    }
+    let body = std::fs::read_to_string(path).ok()?;
+    let parsed = parse_snapshot(&body)?;
+    let arc = std::sync::Arc::new(parsed);
+    *guard = Some(LiveParse {
+        fingerprint,
+        snapshot: arc.clone(),
+    });
+    Some(arc)
+}
+
+/// The catalog actually in force: the fetched models.dev body when present
+/// and parseable, otherwise the checked-in snapshot. Refreshing the cache
+/// file therefore updates every consumer (picker, hydration, base URLs)
+/// without a restart.
+fn active_snapshot() -> std::sync::Arc<ModelsDevSnapshot> {
+    let path = models_dev_live_cache_path();
+    if let Some(fingerprint) = live_cache_fingerprint(&path)
+        && let Some(live) = cached_live_snapshot(&path, fingerprint)
+    {
+        return live;
+    }
+    static FALLBACK: OnceLock<std::sync::Arc<ModelsDevSnapshot>> = OnceLock::new();
+    FALLBACK
+        .get_or_init(|| std::sync::Arc::new(checked_in_snapshot().clone()))
+        .clone()
+}
+
+/// Fetch the live models.dev registry and persist it to the live-cache file.
+/// Shared by every snapshot-backed provider — one download refreshes Umans,
+/// DeepSeek, and OpenCode together.
+pub fn fetch_models_dev_blocking() -> anyhow::Result<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()?;
+    let response = client.get(MODELS_DEV_URL).send()?;
+    if !response.status().is_success() {
+        anyhow::bail!("models.dev returned {}", response.status());
+    }
+    let body = response.text()?;
+    if parse_snapshot(&body).is_none() {
+        anyhow::bail!("models.dev returned an unparseable catalog");
+    }
+    if let Some(parent) = models_dev_live_cache_path().parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(models_dev_live_cache_path(), &body)?;
+    Ok(body)
+}
+
+/// Resolve a provider's base URL: the models.dev `api` field wins over the
+/// spec default so we never drift from the registry.
+pub fn base_url(spec: &ProviderSpec) -> String {
+    base_url_in(&active_snapshot(), spec)
+}
+
+fn base_url_in(snapshot: &ModelsDevSnapshot, spec: &ProviderSpec) -> String {
+    for id in spec.models_dev_ids {
+        if let Some(provider) = snapshot.providers.get(*id) {
+            return provider
+                .api
+                .clone()
+                .unwrap_or_else(|| spec.default_base_url.to_string());
+        }
+    }
+    spec.default_base_url.to_string()
+}
+
+/// All catalog models for a provider, live-cache first, checked-in snapshot
+/// as fallback. Merged across the provider's models.dev ids (Umans has both a
+/// plan and an org entry). Union by wire id.
 pub fn snapshot_models(spec: &ProviderSpec) -> Vec<ProviderModel> {
+    snapshot_models_in(&active_snapshot(), spec)
+}
+
+fn snapshot_models_in(snapshot: &ModelsDevSnapshot, spec: &ProviderSpec) -> Vec<ProviderModel> {
     let mut out: Vec<ProviderModel> = Vec::new();
     for id in spec.models_dev_ids {
-        let Some(provider) = snapshot().providers.get(*id) else {
+        let Some(provider) = snapshot.providers.get(*id) else {
             tracing::warn!(provider = ?id, "models.dev snapshot missing provider entry");
             continue;
         };
@@ -285,13 +382,13 @@ const COMMAND_CODE_FALLBACK: &[(&str, &str, u64)] = &[
     ("xai/grok-4.6", "Grok 4.6", 500_000),
 ];
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CommandCodeModelsResponse {
     #[serde(rename = "data")]
     data: Vec<CommandCodeModel>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CommandCodeModel {
     #[serde(rename = "id")]
     id: String,
@@ -400,10 +497,32 @@ mod tests {
 
     #[test]
     fn snapshot_parses_with_providers() {
-        let snap = snapshot();
+        let snap = checked_in_snapshot();
         assert!(snap.umans_plan_model_count() >= 5, "umans-ai-coding-plan models");
         assert!(snap.providers.contains_key("deepseek"));
         assert!(snap.providers.contains_key("opencode"));
+    }
+
+    /// The live-cache path must win over the checked-in snapshot whenever it
+    /// parses, so refreshed catalogs reach hydration without a restart.
+    #[test]
+    fn live_cache_overrides_checked_in_snapshot() {
+        let spec = builtin_providers()
+            .iter()
+            .find(|s| s.id == "deepseek")
+            .unwrap();
+        let live = r#"{"deepseek":{"api":"https://example.invalid/v1","models":{
+            "brand-new-model":{"id":"brand-new-model","name":"Brand New","reasoning":true}
+        }}}"#;
+        let parsed = parse_snapshot(live).expect("test fixture parses");
+        let models = snapshot_models_in(&parsed, spec);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].slug, "deepseek-brand-new-model");
+        assert_eq!(
+            base_url_in(&parsed, spec),
+            "https://example.invalid/v1",
+            "live api field wins"
+        );
     }
 
     #[test]

@@ -722,6 +722,12 @@ pub struct AppView {
     /// External `auth_provider_command` deployment.
     /// No grok.com billing session exists; `/usage` and credit UI stay off.
     pub has_external_auth_provider: bool,
+    /// Whether any usable credential exists: xAI login token, xAI API key, or
+    /// a connected external provider. When false, the welcome screen must not
+    /// auto-start sessions — every create fails with "no auth method id
+    /// provided", and the type-to-open flow turns into a retry storm (each
+    /// keystroke spawns a doomed session). Set in `event_loop::run`.
+    pub has_any_credential: bool,
     /// Slash commands denied for the current subscription tier
     /// ([`TIER_RESTRICTED_COMMANDS`] when the user is on the free / X Basic
     /// tier, empty otherwise). Recomputed by [`Self::apply_tier_restrictions`]
@@ -1200,6 +1206,11 @@ pub struct AppView {
     pub import_claude_modal: Option<crate::views::import_claude_modal::ImportClaudeModalState>,
     /// Doc viewer overlay for the welcome screen (release notes via Ctrl+L).
     pub welcome_doc_viewer: Option<crate::views::modal::ActiveModal>,
+    /// Session-less provider management / key-entry dialogs. Hosted at app
+    /// level (mirroring [`Self::welcome_doc_viewer`]) because they must work
+    /// before any agent/session exists — e.g. a first launch with zero
+    /// credentials, where the login splash is suppressed.
+    pub welcome_modal: Option<crate::views::modal::ActiveModal>,
     /// Whether the pager uses fullscreen (alt-screen) or inline mode.
     /// Set from the resolved terminal state at startup.
     pub(crate) screen_mode: super::ScreenMode,
@@ -1654,6 +1665,7 @@ impl AppView {
             has_claude_import: false,
             import_claude_modal: None,
             welcome_doc_viewer: None,
+            welcome_modal: None,
             screen_mode: ScreenMode::Inline,
             show_resolved_model: true,
             sharing_enabled: false,
@@ -1661,6 +1673,7 @@ impl AppView {
             workspace_dashboard_enabled: false,
             usage_visible: true,
             has_external_auth_provider: false,
+            has_any_credential: true,
             tier_restricted_commands: Vec::new(),
             leader_mode: false,
             credit_balance: None,
@@ -2622,6 +2635,8 @@ impl AppView {
                     has_claude_import: self.has_claude_import,
                     import_claude_modal: &mut self.import_claude_modal,
                     welcome_doc_viewer: &mut self.welcome_doc_viewer,
+                    welcome_modal: &mut self.welcome_modal,
+                    can_start_session: self.has_any_credential,
                     changelog_markdown: &self.changelog_markdown,
                     show_changelog_action: self.welcome_show_changelog_action,
                     has_pending_update: self.pending_update_version.is_some(),
@@ -3257,6 +3272,12 @@ struct WelcomeInputCtx<'a> {
     has_claude_import: bool,
     import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
     welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
+    /// Session-less provider/key dialogs (see [`AppView::welcome_modal`]).
+    welcome_modal: &'a mut Option<crate::views::modal::ActiveModal>,
+    /// Whether any credential exists (xAI token, API key, or connected
+    /// provider). When false, the type-to-open / Enter-starts-session paths
+    /// are gated — see [`AppView::has_any_credential`].
+    can_start_session: bool,
     changelog_markdown: &'a Option<String>,
     /// Whether the welcome menu currently includes a "Changelog" row (above
     /// Quit), so index→action mapping accounts for it.
@@ -3358,6 +3379,81 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             }
         }
         return InputOutcome::Unchanged;
+    }
+    // Session-less provider management / key entry. Hosted at app level so it
+    // works before any session exists (first launch with zero credentials).
+    // Outcomes map onto the same actions the in-session modal router uses —
+    // their dispatchers (store/clear key, refresh) are agent-free.
+    if let Some(modal) = ctx.welcome_modal.as_mut() {
+        if let Event::Key(key) = ev {
+            if key.kind == crossterm::event::KeyEventKind::Release {
+                return InputOutcome::Unchanged;
+            }
+            use crate::views::connect_provider_modal::ConnectKeyOutcome;
+            use crate::views::providers_modal::ProviderDialogOutcome;
+            match modal {
+                crate::views::modal::ActiveModal::Providers { state } => {
+                    match state.handle_key(key) {
+                        ProviderDialogOutcome::Close => {
+                            *ctx.welcome_modal = None;
+                            return InputOutcome::Changed;
+                        }
+                        ProviderDialogOutcome::Connect(provider) => {
+                            if let Some(connect_state) =
+                                crate::views::connect_provider_modal::ConnectProviderModal::open(
+                                    xai_grok_shell::providers::find_provider(&provider),
+                                )
+                            {
+                                *ctx.welcome_modal =
+                                    Some(crate::views::modal::ActiveModal::ConnectProvider {
+                                        state: Box::new(connect_state),
+                                    });
+                            }
+                            return InputOutcome::Changed;
+                        }
+                        ProviderDialogOutcome::Disconnect(provider) => {
+                            return InputOutcome::Action(Action::DisconnectProvider(provider));
+                        }
+                        ProviderDialogOutcome::Refresh(provider) => {
+                            return InputOutcome::Action(Action::RefreshProviderModels {
+                                provider: Some(provider),
+                            });
+                        }
+                        ProviderDialogOutcome::RefreshAll => {
+                            return InputOutcome::Action(Action::RefreshProviderModels {
+                                provider: None,
+                            });
+                        }
+                        ProviderDialogOutcome::Changed => return InputOutcome::Changed,
+                    }
+                }
+                crate::views::modal::ActiveModal::ConnectProvider { state } => {
+                    match state.handle_key(key) {
+                        ConnectKeyOutcome::Close => {
+                            *ctx.welcome_modal = None;
+                            return InputOutcome::Changed;
+                        }
+                        ConnectKeyOutcome::Submit(submit) => {
+                            // The SubmitConnectKey dispatcher lifts the
+                            // credential gate on success, so typing starts
+                            // working immediately after a connect.
+                            *ctx.welcome_modal = None;
+                            return InputOutcome::Action(Action::SubmitConnectKey {
+                                provider: submit.provider,
+                                key: submit.key,
+                            });
+                        }
+                        ConnectKeyOutcome::Changed => return InputOutcome::Changed,
+                        ConnectKeyOutcome::Unhandled => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        if matches!(ev, Event::Mouse(_)) {
+            return InputOutcome::Unchanged;
+        }
+        return InputOutcome::Changed;
     }
     if let Some(dialog) = ctx.new_worktree_dialog.as_mut() {
         let outcome = match ev {
@@ -3790,7 +3886,18 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             && key!(Enter).matches(key)
             && key.modifiers.is_empty()
         {
+            // No credentials: creating would fail instantly ("no auth method
+            // id provided"). Point at the provider dialog instead.
+            if !ctx.can_start_session {
+                return InputOutcome::Action(Action::OpenProviders);
+            }
             return InputOutcome::Action(Action::NewSession);
+        }
+        if matches!(ctx.auth_state, AuthState::Done)
+            && !ctx.can_start_session
+            && key!('p', CONTROL).matches(key)
+        {
+            return InputOutcome::Action(Action::OpenProviders);
         }
         if matches!(ctx.auth_state, AuthState::Done) {
             if ctx.upgrade_cta_keyboard && key!('o', CONTROL).matches(key) {
@@ -3817,11 +3924,18 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 return InputOutcome::Action(Action::DismissClaudeImport);
             }
         }
-        if matches!(ctx.auth_state, AuthState::Done) && crate::input::key::is_shift_tab(key) {
+        if
+        matches!(ctx.auth_state, AuthState::Done)
+            && ctx.can_start_session
+            && crate::input::key::is_shift_tab(key)
+        {
             return InputOutcome::ActionThenForward(Action::NewSession);
         }
+        // No credentials: accumulate keystrokes in the local welcome editor
+        // instead of spawning a doomed session per character.
         if *ctx.prompt_focused
             && matches!(ctx.auth_state, AuthState::Done)
+            && ctx.can_start_session
             && let KeyCode::Char(ch) = key.code
             && (crate::input::key::is_text_input_key(key)
                 || (ch == 'v' && crate::input::key::is_paste_key(key)))
@@ -3862,6 +3976,13 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             if crate::input::key::is_text_input_key(key) {
                 *ctx.prompt_focused = true;
                 *ctx.menu_index = None;
+                if !ctx.can_start_session {
+                    // Feed this first character into the local editor so the
+                    // keystroke isn't swallowed; further keys flow through the
+                    // focused-editor branch above.
+                    let _ = ctx.prompt.handle_key(key);
+                    return InputOutcome::Changed;
+                }
                 return InputOutcome::ActionThenForward(Action::NewSession);
             }
         }
@@ -3952,6 +4073,10 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
             AuthState::Done => {
                 if !ctx.has_access || ctx.is_zdr_blocked {
                     return InputOutcome::Unchanged;
+                }
+                if !ctx.can_start_session {
+                    let _ = ctx.prompt.handle_paste(text);
+                    return InputOutcome::Changed;
                 }
                 return InputOutcome::ActionThenForward(Action::NewSession);
             }
@@ -4750,6 +4875,27 @@ impl AppView {
                                 compact,
                             );
                         }
+                        match self.welcome_modal.as_mut() {
+                            Some(crate::views::modal::ActiveModal::Providers { state }) => {
+                                crate::views::providers_modal::render(
+                                    state,
+                                    f.buffer_mut(),
+                                    view_area,
+                                    &crate::theme::Theme::current(),
+                                    compact,
+                                );
+                            }
+                            Some(crate::views::modal::ActiveModal::ConnectProvider { state }) => {
+                                crate::views::connect_provider_modal::render(
+                                    state,
+                                    f.buffer_mut(),
+                                    view_area,
+                                    &crate::theme::Theme::current(),
+                                    compact,
+                                );
+                            }
+                            _ => {}
+                        }
                         if let Some(dialog) = self.new_worktree_dialog.as_ref() {
                             crate::views::new_worktree_dialog::render_new_worktree_dialog(
                                 view_area,
@@ -4970,6 +5116,29 @@ impl AppView {
                                     &theme,
                                     compact,
                                 );
+                            }
+                            match self.welcome_modal.as_mut() {
+                                Some(crate::views::modal::ActiveModal::Providers { state }) => {
+                                    crate::views::providers_modal::render(
+                                        state,
+                                        f.buffer_mut(),
+                                        view_area,
+                                        &crate::theme::Theme::current(),
+                                        compact,
+                                    );
+                                }
+                                Some(crate::views::modal::ActiveModal::ConnectProvider {
+                                    state,
+                                }) => {
+                                    crate::views::connect_provider_modal::render(
+                                        state,
+                                        f.buffer_mut(),
+                                        view_area,
+                                        &crate::theme::Theme::current(),
+                                        compact,
+                                    );
+                                }
+                                _ => {}
                             }
                             if let Some(tutorial) = self.tutorial.as_mut() {
                                 crate::views::tutorial::render_tutorial(

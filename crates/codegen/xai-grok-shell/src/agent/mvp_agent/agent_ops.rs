@@ -4226,9 +4226,47 @@ impl MvpAgent {
         let support_permission = self.cfg.borrow().features.support_permission;
         let telemetry_enabled = self.product_analytics_enabled();
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
+        // BYOK-only installs: with no xAI auth method selected (fresh machine
+        // that only connected a provider), the default session model may
+        // still be a built-in xAI entry no credential can serve. Fall back to
+        // the first catalog model carrying its own credentials so such
+        // installs can start sessions at all.
+        let session_model_id = if self.auth_method_id.load().is_none()
+            && !self
+                .resolve_model_id(&session_model_id)
+                .ok()
+                .is_some_and(|m| m.has_own_credentials())
+        {
+            match self
+                .models_manager
+                .models()
+                .into_iter()
+                .find(|(_, m)| m.has_own_credentials())
+            {
+                Some((key, _)) => {
+                    xai_grok_telemetry::unified_log::info(
+                        "auth: no xAI auth method; using BYOK model for new session",
+                        None,
+                        Some(serde_json::json!({ "model": key })),
+                    );
+                    acp::ModelId::new(key)
+                }
+                None => session_model_id,
+            }
+        } else {
+            session_model_id
+        };
         let sampling_config = self
             .resolve_sampling_config_for_model(&session_model_id, origin_client.clone());
-        if self.auth_method_id.load().is_none() {
+        // The auth-method gate below exists for xAI-billed sessions; a model
+        // with its own credential (static key or connected provider) does not
+        // need one.
+        if self.auth_method_id.load().is_none()
+            && !self
+                .resolve_model_id(&session_model_id)
+                .ok()
+                .is_some_and(|m| m.has_own_credentials())
+        {
             return Err(acp::Error::auth_required().data("no auth method id provided"));
         }
         let auth_method_id = std::sync::Arc::clone(&self.auth_method_id);

@@ -9,7 +9,6 @@ pub mod auto;
 pub mod btw;
 pub mod cd;
 pub mod compact;
-pub mod connect;
 pub mod compact_mode;
 pub mod config_agents;
 pub mod context;
@@ -47,6 +46,7 @@ pub mod personas;
 pub mod plan;
 pub mod plugin;
 pub mod privacy;
+pub mod provider;
 pub mod queue;
 pub mod recap;
 pub mod release_notes;
@@ -139,8 +139,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(jump::JumpCommand),
         Arc::new(login::LoginCommand),
         Arc::new(logout::LogoutCommand),
-        Arc::new(connect::ConnectCommand),
-        Arc::new(connect::DisconnectCommand),
+        Arc::new(provider::ProviderCommand),
         Arc::new(import_claude::ImportClaudeCommand),
         Arc::new(usage::UsageCommand),
         Arc::new(queue::QueueCommand),
@@ -619,97 +618,65 @@ mod tests {
         );
     }
     #[test]
-    fn connect_lists_open_source_providers() {
+    fn provider_opens_management_dialog_action() {
         let models = sample_models();
         let mut ctx = make_ctx(&models);
-        let result = connect::ConnectCommand.run(&mut ctx, "");
+        let result = provider::ProviderCommand.run(&mut ctx, "");
         match result {
-            CommandResult::Message(msg) => {
-                assert!(msg.contains("umans"), "{msg}");
-                assert!(msg.contains("deepseek"), "{msg}");
-                assert!(msg.contains("opencode"), "{msg}");
-                assert!(msg.contains("commandcode"), "{msg}");
+            CommandResult::Action(Action::OpenProviders) => {}
+            other => panic!("expected OpenProviders action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn provider_rejects_arguments_dialog_covers_the_work() {
+        let models = sample_models();
+        let mut ctx = make_ctx(&models);
+        let result = provider::ProviderCommand.run(&mut ctx, "deepseek");
+        match result {
+            CommandResult::Error(msg) => {
+                assert!(msg.contains("no arguments"), "{msg}");
             }
-            other => panic!("expected Message, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn connect_unknown_provider_errors() {
-        let models = sample_models();
-        let mut ctx = make_ctx(&models);
-        let result = connect::ConnectCommand.run(&mut ctx, "openai");
-        match result {
-            CommandResult::Error(msg) => assert!(msg.contains("Unknown provider"), "{msg}"),
             other => panic!("expected Error, got {other:?}"),
         }
     }
 
     #[test]
-    fn connect_in_session_opens_key_modal_action() {
-        let models = sample_models();
-        let mut ctx = make_ctx(&models);
-        let session_id = agent_client_protocol::SessionId::new("sess-test");
-        ctx.session_id = Some(&session_id);
-        let result = connect::ConnectCommand.run(&mut ctx, "commandcode");
-        match result {
-            CommandResult::Action(Action::ConnectProvider(id)) => assert_eq!(id, "commandcode"),
-            other => panic!("expected ConnectProvider action, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn disconnect_routes_to_provider_action() {
-        let models = sample_models();
-        let mut ctx = make_ctx(&models);
-        let result = connect::DisconnectCommand.run(&mut ctx, "opencode");
-        match result {
-            CommandResult::Action(Action::DisconnectProvider(id)) => assert_eq!(id, "opencode"),
-            other => panic!("expected DisconnectProvider action, got {other:?}"),
-        }
-    }
-    #[test]
-    fn disconnect_unknown_provider_errors() {
-        let models = sample_models();
-        let mut ctx = make_ctx(&models);
-        let result = connect::DisconnectCommand.run(&mut ctx, "openai");
-        match result {
-            CommandResult::Error(msg) => assert!(msg.contains("Unknown provider"), "{msg}"),
-            other => panic!("expected Error, got {other:?}"),
-        }
+    fn connect_and_disconnect_are_replaced_by_provider() {
+        let reg = CommandRegistry::new(builtin_commands());
+        assert!(
+            reg.get("provider").is_some(),
+            "/provider must be registered"
+        );
+        assert!(
+            reg.get("connect").is_none() && reg.get("disconnect").is_none(),
+            "the dialog supersedes the old per-provider slash commands"
+        );
+        assert!(
+            reg.get("providers").is_some(),
+            "'providers' alias must resolve"
+        );
     }
 
     #[test]
     fn disconnect_suggestions_list_only_connected_providers() {
-        let models = sample_models();
-        let ctx = crate::slash::command::AppCtx {
-            models: &models,
-            cwd: std::path::Path::new("."),
-            has_session_announcements: false,
-            billing_surface_visible: true,
-            usage_command_visible: true,
-            workflows_available: false,
-            screen_mode: crate::app::ScreenMode::Fullscreen,
-            current_title: None,
-        };
         let connected: Vec<&str> = xai_grok_shell::providers::builtin_providers()
             .iter()
             .filter(|spec| xai_grok_shell::providers::is_connected(spec))
             .map(|spec| spec.id)
             .collect();
-        match connect::DisconnectCommand.suggest_args(&ctx, "") {
-            None => assert!(
-                connected.is_empty(),
-                "no suggestions must mean no connected providers"
-            ),
-            Some(items) => {
-                let ids: Vec<String> = items.into_iter().map(|i| i.display).collect();
-                assert_eq!(
-                    ids, connected,
-                    "suggestions must be exactly the connected providers"
-                );
-            }
-        }
+        // The management dialog replaced /disconnect; its rows must flag
+        // exactly the configured providers so d/r only target those.
+        let rows = crate::views::providers_modal::ProvidersModal::open().rows();
+        let flagged: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.connected)
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(
+            flagged, connected,
+            "dialog rows must mark exactly the connected providers"
+        );
     }
     #[test]
     fn queue_registered_in_builtin_commands() {

@@ -31,6 +31,9 @@ use super::interject::dispatch_interject;
 use super::connect_provider::{
     dispatch_connect_provider, dispatch_disconnect_provider, dispatch_submit_connect_key,
 };
+use super::providers::{
+    dispatch_open_providers, dispatch_refresh_provider_models, reopen_providers_dialog,
+};
 use super::jump::{dispatch_jump_dismiss, dispatch_jump_picker_select, dispatch_jump_show_picker};
 use super::modes::{
     dispatch_cycle_mode, dispatch_enter_plan_mode, dispatch_show_plan, dispatch_toggle_yolo,
@@ -1115,11 +1118,21 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PermissionCancel => dispatch_permission_cancel(app),
         Action::Logout => dispatch_logout(app),
         Action::ConnectProvider(provider) => dispatch_connect_provider(app, &provider),
+        Action::OpenProviders => dispatch_open_providers(app),
+        Action::RefreshProviderModels { provider } => {
+            dispatch_refresh_provider_models(app, provider)
+        }
         Action::SubmitConnectKey { provider, key } => {
-            dispatch_submit_connect_key(app, &provider, &key)
+            let mut effects = dispatch_submit_connect_key(app, &provider, &key);
+            // The key modal was opened from the provider dialog; return there
+            // so the new connection state is visible right away.
+            reopen_providers_dialog(app);
+            effects
         }
         Action::CancelConnectKey => {
-            with_active_agent(app, |agent| agent.active_modal = None);
+            // Esc from the key dialog returns to the provider list (the only
+            // place that opens it).
+            reopen_providers_dialog(app);
             vec![]
         }
         Action::DisconnectProvider(provider) => dispatch_disconnect_provider(app, &provider),

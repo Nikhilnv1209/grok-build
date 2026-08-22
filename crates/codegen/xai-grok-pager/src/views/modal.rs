@@ -247,6 +247,11 @@ pub enum ActiveModal {
     ConnectProvider {
         state: Box<crate::views::connect_provider_modal::ConnectProviderModal>,
     },
+    /// Provider management dialog (`/provider`): connect / disconnect /
+    /// refresh for every built-in open-source provider in one place.
+    Providers {
+        state: Box<crate::views::providers_modal::ProvidersModal>,
+    },
     /// Documentation panel showing full content of a selected how-to guide.
     DocViewer {
         title: String,
@@ -654,6 +659,7 @@ impl ActiveModal {
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
             | ActiveModal::ConnectProvider { .. }
+            | ActiveModal::Providers { .. }
             | ActiveModal::DocViewer { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
@@ -685,6 +691,7 @@ impl ActiveModal {
             },
             ActiveModal::DocPicker { .. } => "How-to Guides",
             ActiveModal::ConnectProvider { state } => state.provider.name,
+            ActiveModal::Providers { .. } => "Provider management",
             ActiveModal::DocViewer { title, .. } => title.as_str(),
             ActiveModal::ShortcutsHelp { .. } => "Keyboard Shortcuts",
             ActiveModal::MemoryBrowser { .. } => "Memory",

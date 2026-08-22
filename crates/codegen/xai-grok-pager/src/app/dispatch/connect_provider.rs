@@ -8,21 +8,27 @@ use crate::views::modal::ActiveModal;
 use xai_grok_shell::providers;
 
 /// Open the masked API-key modal for a provider on the visible agent.
-/// Falls back to a toast when no agent view is active (welcome screen).
+/// Before any session exists (fresh launch), hosts it at app level so
+/// connecting still works from the welcome screen.
 pub(super) fn dispatch_connect_provider(app: &mut AppView, provider_id: &str) -> Vec<Effect> {
-    let Some(modal_state) = ConnectProviderModal::open(providers::find_provider(provider_id)) else {
-        app.show_toast("Unknown provider");
-        return vec![];
-    };
     let mut opened = false;
     with_active_agent(app, |agent| {
-        agent.active_modal = Some(ActiveModal::ConnectProvider {
-            state: Box::new(modal_state),
-        });
-        opened = true;
+        if let Some(state) = ConnectProviderModal::open(providers::find_provider(provider_id)) {
+            agent.active_modal = Some(ActiveModal::ConnectProvider {
+                state: Box::new(state),
+            });
+            opened = true;
+        }
     });
     if !opened {
-        app.show_toast("Start a session first, then run /connect.");
+        match ConnectProviderModal::open(providers::find_provider(provider_id)) {
+            Some(state) => {
+                app.welcome_modal = Some(ActiveModal::ConnectProvider {
+                    state: Box::new(state),
+                });
+            }
+            None => app.show_toast("Unknown provider"),
+        }
     }
     vec![]
 }
@@ -46,6 +52,11 @@ pub(super) fn dispatch_submit_connect_key(
             // refreshed list arrives as `x.ai/models/update`. Leader mode
             // dedupes with its own auth.json watcher.
             effects.push(Effect::ReloadAgentModels);
+            // A successful connect lifts the welcome gate so type-to-open
+            // starts working immediately on a fresh, previously credential-less
+            // launch.
+            app.has_any_credential = true;
+            app.has_external_auth_provider = true;
             format!("Connected {name}. Models refresh automatically.")
         }
         Err(error) => format!("Connect failed: {error}"),

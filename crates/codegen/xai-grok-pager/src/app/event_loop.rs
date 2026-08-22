@@ -1105,7 +1105,12 @@ pub(crate) async fn run(
     // Seed auth state from ACP connection metadata.
     // --force-login overrides: show the login screen even when credentials exist.
     let force_login = args.force_login && !connection.auth_methods.is_empty();
-    let needs_interactive_login = connection.needs_login || force_login;
+    // BYOK-first: the first-launch login splash is suppressed entirely.
+    // Provider models carry their own credentials (`/provider` registers
+    // more), so an unauthenticated launch lands on a usable welcome screen;
+    // `/login` and `--force-login` remain the explicit ways to start the
+    // xAI flow.
+    let needs_interactive_login = force_login;
     if needs_interactive_login {
         app.welcome_prompt_focused = false;
 
@@ -1178,6 +1183,10 @@ pub(crate) async fn run(
 
     app.has_external_auth_provider =
         crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
+    // Gate for welcome's type-to-open flow: with no xAI token (shell still
+    // reports needs_login) and no provider key, session creation would fail
+    // on every keystroke, so welcome must not auto-start sessions.
+    app.has_any_credential = !connection.needs_login || app.has_external_auth_provider;
 
     if let Some(meta) = connection.auth_meta.as_ref() {
         match serde_json::from_value::<xai_grok_shell::auth::AuthMeta>(meta.clone()) {

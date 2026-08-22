@@ -8,6 +8,7 @@ mod modes;
 mod notes;
 mod permissions;
 mod prompt;
+mod providers;
 mod rewind;
 mod router;
 mod session;
@@ -261,6 +262,7 @@ fn test_app() -> AppView {
         relaunch: None,
         import_claude_modal: None,
         welcome_doc_viewer: None,
+        welcome_modal: None,
         screen_mode: crate::app::ScreenMode::Inline,
         pending_effects: Vec::new(),
         pending_editor: None,
@@ -274,6 +276,7 @@ fn test_app() -> AppView {
         workspace_dashboard_enabled: false,
         usage_visible: true,
         has_external_auth_provider: false,
+        has_any_credential: true,
         tier_restricted_commands: Vec::new(),
         leader_mode: true,
         credit_balance: None,

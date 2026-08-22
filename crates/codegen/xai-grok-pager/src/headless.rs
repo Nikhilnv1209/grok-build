@@ -886,6 +886,13 @@ pub async fn run_single_turn(
     let t_auth = Instant::now();
     xai_grok_telemetry::startup::enter(crate::acp::StartupPhase::EagerAuth);
     let default_auth_method_id = crate::acp::parse_default_auth_method_id(init_resp.meta.as_ref());
+    // BYOK-only installs (provider connected, no xAI credential) advertise no
+    // eager auth method by design. Session creation falls back to
+    // credential-carrying models, so only fail here when the catalog offers
+    // none of those either.
+    let catalog_has_byok = xai_grok_shell::providers::builtin_providers()
+        .iter()
+        .any(|spec| xai_grok_shell::providers::is_connected(spec));
     let is_api_key_auth = match authenticate(
         &acp_tx,
         &init_resp.auth_methods,
@@ -895,9 +902,17 @@ pub async fn run_single_turn(
     {
         Ok(is_api_key) => is_api_key,
         Err(e) => {
-            report_startup_failure(&timer);
-            emitter.on_error(&e.to_string(), None);
-            return Err(e);
+            if catalog_has_byok {
+                tracing::info!(
+                    "headless: no eager auth method but a provider is connected; \
+                     letting session creation use its credentials"
+                );
+                false
+            } else {
+                report_startup_failure(&timer);
+                emitter.on_error(&e.to_string(), None);
+                return Err(e);
+            }
         }
     };
     tracing::debug!(

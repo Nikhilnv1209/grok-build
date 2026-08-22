@@ -370,6 +370,43 @@ impl AgentView {
             }
         }
 
+        // Providers: management dialog. Connect hands off to the masked key
+        // modal; disconnect/refresh dispatch actions while staying open so
+        // the rows (recomputed per draw) reflect the new state.
+        if let ActiveModal::Providers { ref mut state } = *modal {
+            use crate::views::providers_modal::ProviderDialogOutcome;
+            match state.handle_key(key) {
+                ProviderDialogOutcome::Close => {
+                    self.active_modal = None;
+                    return InputOutcome::Changed;
+                }
+                ProviderDialogOutcome::Connect(provider) => {
+                    if let Some(connect_state) =
+                        crate::views::connect_provider_modal::ConnectProviderModal::open(
+                            xai_grok_shell::providers::find_provider(&provider),
+                        )
+                    {
+                        self.active_modal = Some(ActiveModal::ConnectProvider {
+                            state: Box::new(connect_state),
+                        });
+                    }
+                    return InputOutcome::Changed;
+                }
+                ProviderDialogOutcome::Disconnect(provider) => {
+                    return InputOutcome::Action(Action::DisconnectProvider(provider));
+                }
+                ProviderDialogOutcome::Refresh(provider) => {
+                    return InputOutcome::Action(Action::RefreshProviderModels {
+                        provider: Some(provider),
+                    });
+                }
+                ProviderDialogOutcome::RefreshAll => {
+                    return InputOutcome::Action(Action::RefreshProviderModels { provider: None });
+                }
+                ProviderDialogOutcome::Changed => return InputOutcome::Changed,
+            }
+        }
+
         // ConnectProvider: masked secret input. Owns all keys while open
         // (Enter submits, Esc cancels, anything else types into the editor).
         if let ActiveModal::ConnectProvider { ref mut state } = *modal {
@@ -536,6 +573,7 @@ impl AgentView {
             | ActiveModal::SessionPicker { .. }
             | ActiveModal::DocPicker { .. }
             | ActiveModal::ConnectProvider { .. }
+            | ActiveModal::Providers { .. }
             | ActiveModal::DocViewer { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
@@ -2311,6 +2349,14 @@ impl AgentView {
                 }
             } else if let modal::ActiveModal::ConnectProvider { state } = active_modal {
                 crate::views::connect_provider_modal::render(
+                    state,
+                    buf,
+                    area,
+                    &theme,
+                    self.scrollback.appearance().prompt.compact,
+                );
+            } else if let modal::ActiveModal::Providers { state } = active_modal {
+                crate::views::providers_modal::render(
                     state,
                     buf,
                     area,

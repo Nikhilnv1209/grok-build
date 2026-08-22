@@ -4406,6 +4406,34 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::RefreshProviderCatalogs { provider } => {
+            tasks.spawn(async move {
+                let outcomes = tokio::task::spawn_blocking(move || {
+                    xai_grok_shell::providers::refresh_connected_providers_blocking()
+                })
+                .await
+                .unwrap_or_default();
+                let mut refreshed = Vec::new();
+                let mut failures = Vec::new();
+                for outcome in outcomes {
+                    use xai_grok_shell::providers::ProviderRefreshStatus;
+                    match outcome.status {
+                        ProviderRefreshStatus::Refreshed { .. } => {
+                            refreshed.push(outcome.provider_id.to_string());
+                        }
+                        ProviderRefreshStatus::Failed { error } => {
+                            failures.push(format!("{}: {}", outcome.provider_id, error));
+                        }
+                        ProviderRefreshStatus::SkippedNotConnected => {}
+                    }
+                }
+                TaskResult::ProviderCatalogsRefreshed {
+                    requested: provider,
+                    refreshed,
+                    failures,
+                }
+            });
+        }
         Effect::FetchAppBilling => {
             let tx = acp_tx.clone();
             tasks
