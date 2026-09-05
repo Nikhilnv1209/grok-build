@@ -152,6 +152,30 @@ pub fn stream_chat_completions<'a>(
 
                 let delta = choice.delta;
 
+                // A merged delta that flushes the tail of a reasoning block
+                // together with the first content token must surface the
+                // reasoning first: it logically closes the block that
+                // precedes the content.
+                if let Some(thought) = delta.reasoning_content
+                    && !thought.is_empty()
+                {
+                    if !first_token_emitted {
+                        first_token_emitted = true;
+                        yield SamplingEvent::FirstToken {
+                            request_id: request_id.clone(),
+                        };
+                    }
+                    chunk_has_content = true;
+                    chunk_index += 1;
+                    reasoning_acc.push_str(&thought);
+                    yield SamplingEvent::ChannelToken {
+                        request_id: request_id.clone(),
+                        channel: SamplingChannel::Reasoning,
+                        text: thought,
+                        chunk_index,
+                    };
+                }
+
                 if let Some(text) = delta.content
                     && !text.is_empty()
                 {
@@ -170,26 +194,6 @@ pub fn stream_chat_completions<'a>(
                         request_id: request_id.clone(),
                         channel: SamplingChannel::Text,
                         text,
-                        chunk_index,
-                    };
-                }
-
-                if let Some(thought) = delta.reasoning_content
-                    && !thought.is_empty()
-                {
-                    if !first_token_emitted {
-                        first_token_emitted = true;
-                        yield SamplingEvent::FirstToken {
-                            request_id: request_id.clone(),
-                        };
-                    }
-                    chunk_has_content = true;
-                    chunk_index += 1;
-                    reasoning_acc.push_str(&thought);
-                    yield SamplingEvent::ChannelToken {
-                        request_id: request_id.clone(),
-                        channel: SamplingChannel::Reasoning,
-                        text: thought,
                         chunk_index,
                     };
                 }
@@ -491,6 +495,66 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn combined_content_and_reasoning_delta_emits_reasoning_before_text() {
+        // Some ChatCompletions backends (e.g. GLM muxers) flush the final
+        // fragment of a reasoning block together with the first content
+        // token in a single delta. The reasoning tail semantically belongs
+        // to the block that precedes the content, so the merged delta must
+        // surface Reasoning first to keep the client's block ordering
+        // stable.
+        let mut first = make_chunk(vec![ChatChunkDelta {
+            role: Some(Role::Assistant),
+            content: None,
+            reasoning_content: Some("thinking...".into()),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }]);
+        first.choices[0].finish_reason = None;
+
+        let mut combined = make_chunk(vec![ChatChunkDelta {
+            role: Some(Role::Assistant),
+            content: Some("You".into()),
+            reasoning_content: Some(".".into()),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }]);
+        combined.choices[0].finish_reason = None;
+
+        let chunks: Vec<Result<ChatCompletionChunk, SamplingError>> = vec![
+            Ok(first),
+            Ok(combined),
+            Ok(final_chunk(FinishReason::Stop)),
+        ];
+        let raw = stream::iter(chunks).boxed();
+        let events = collect(stream_chat_completions(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+        ))
+        .await;
+
+        let token_order: Vec<(&str, &str)> = events
+            .iter()
+            .filter_map(|e| match e {
+                SamplingEvent::ChannelToken { channel, text, .. } => {
+                    let label = match channel {
+                        SamplingChannel::Reasoning => "R",
+                        SamplingChannel::Text => "T",
+                    };
+                    Some((label, text.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            token_order,
+            vec![("R", "thinking..."), ("R", "."), ("T", "You")]
+        );
     }
 
     #[tokio::test]
