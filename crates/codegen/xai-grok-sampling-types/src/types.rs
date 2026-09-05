@@ -477,8 +477,11 @@ impl ToolCallRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionResponse {
     pub id: String,
+    #[serde(default)]
     pub object: String,
+    #[serde(default)]
     pub created: u64,
+    #[serde(default)]
     pub model: String,
     pub choices: Vec<ChatChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -590,8 +593,11 @@ pub struct CompletionTokensDetails {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionChunk {
     pub id: String,
+    #[serde(default)]
     pub object: String,
+    #[serde(default)]
     pub created: u64,
+    #[serde(default)]
     pub model: String,
     pub choices: Vec<ChatChunkChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -606,6 +612,7 @@ pub struct ChatCompletionChunk {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatChunkChoice {
+    #[serde(default)]
     pub index: u32,
     pub delta: ChatChunkDelta,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1554,5 +1561,49 @@ mod tests {
         let inner: &dyn TraceContext = &*cloned_trace;
         let downcast = inner.as_any().downcast_ref::<TestTrace>().unwrap();
         assert_eq!(downcast.0, "trace-data");
+    }
+
+    #[test]
+    fn chunk_without_created_object_model_fields_still_deserializes() {
+        // Some ChatCompletions backends (e.g. the GLM muxer) omit the
+        // `created` / `object` / `model` header fields on stream chunks.
+        // Missing fields must not abort the stream; default them instead.
+        let chunk: ChatCompletionChunk = serde_json::from_value(json!({
+            "id": "chatcmpl-123",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "hi"},
+                "finish_reason": null
+            }]
+        }))
+        .expect("chunk without created/object/model must deserialize");
+        assert_eq!(chunk.created, 0);
+        assert!(chunk.object.is_empty());
+        assert!(chunk.model.is_empty());
+        assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn choice_without_index_still_deserializes() {
+        let choice: ChatChunkChoice = serde_json::from_value(json!({
+            "delta": {"reasoning_content": "think"}
+        }))
+        .expect("choice without index must deserialize");
+        assert_eq!(choice.index, 0);
+    }
+
+    #[test]
+    fn response_without_created_object_model_fields_still_deserializes() {
+        let response: ChatCompletionResponse = serde_json::from_value(json!({
+            "id": "chatcmpl-456",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop"
+            }]
+        }))
+        .expect("response without created/object/model must deserialize");
+        assert_eq!(response.created, 0);
+        assert_eq!(response.choices[0].message.content.as_deref(), Some("hi"));
     }
 }
