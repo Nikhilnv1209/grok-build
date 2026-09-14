@@ -46,36 +46,29 @@ impl AgentView {
             | crate::views::rewind::RewindPhase::Error { .. } => None,
         }
     }
-    /// Refresh the scrollback's "awaiting user input" marks so the renderer
-    /// can swap the running-spinner bullet for a pulsing-circle bullet on
-    /// tool entries that are blocked on a permission prompt or
-    /// `ask_user_question`.
-    ///
-    /// Recomputed every frame because the queue/question state is fully
-    /// owned by `AgentView` and changes asynchronously; doing a fresh
-    /// clear+rebuild keeps the mark and the view of record from drifting
-    /// out of sync (e.g. on Cancelled requests we never observe a
-    /// matching "pop" event).
-    ///
-    /// Cheap: O(entries) for the clear plus O(permission_queue +
-    /// question_view) lookups via the tracker, both tiny in practice.
-    ///
-    /// Called once per frame from `AgentView::draw` in the full TUI; minimal
-    /// mode bypasses that draw path, so its commit pass
-    /// ([`crate::minimal::commit::commit_active`]) calls this itself to keep a
-    /// tool blocked on a permission/question out of the committed frontier.
+    /// Refresh the scrollback's "awaiting user input" marks.
+    /// Recomputed every frame because the queue/question state is fully owned by `AgentView` and changes asynchronously.
+    /// On Cancelled requests we never observe a matching "pop" event.
     pub(crate) fn sync_pending_user_input_marks(&mut self) {
+        let already_pending = self.scrollback.pending_user_input_ids();
         self.scrollback.clear_all_pending_user_input();
         for perm in &self.permission_queue {
             let tc_id = perm.request.request.tool_call.tool_call_id.0.as_ref();
             if let Some(entry_id) = self.session.tracker.pending_tool_entry_id(tc_id) {
                 self.scrollback.set_pending_user_input(entry_id, true);
+                if !already_pending.contains(&entry_id) {
+                    self.scrollback.open_permission_edit(entry_id);
+                }
             }
         }
         if let Some(qv) = self.question_view.as_ref()
             && let Some(entry_id) = self.session.tracker.pending_tool_entry_id(&qv.tool_call_id)
         {
             self.scrollback.set_pending_user_input(entry_id, true);
+        }
+        let still_pending = self.scrollback.pending_user_input_ids();
+        for id in already_pending.difference(&still_pending) {
+            self.scrollback.close_permission_edit(*id);
         }
     }
     pub(super) fn handle_rewind_key(&mut self, key: &KeyEvent) -> InputOutcome {
@@ -108,9 +101,8 @@ impl AgentView {
             other => Self::rewind_input_to_outcome(other),
         }
     }
-    /// Map a terminal `RewindInput` (one that doesn't itself move the cursor)
-    /// to the corresponding `InputOutcome`. Shared by the key and mouse paths
-    /// so the two can't drift.
+    /// Map a terminal `RewindInput` (one that doesn't itself move the cursor) to the corresponding `InputOutcome`.
+    /// Shared by the key and mouse paths so the two can't drift.
     fn rewind_input_to_outcome(input: crate::views::rewind::RewindInput) -> InputOutcome {
         use crate::views::rewind::RewindInput;
         match input {
@@ -140,10 +132,8 @@ impl AgentView {
     /// (`selected` for picker, `active_idx` for radio phases) and syncs
     /// the scrollback preview on the picker. `Down(Left)` either
     /// dispatches a synthesized key (radio) or `PickerSelect` (picker).
-    /// Mouse handler for the rewind overlay. `Moved` moves the cursor
-    /// to the row under the pointer; `Down(Left)` moves the cursor then
-    /// activates that row (Enter-equivalent). Geometry comes from
-    /// `rewind_row_at`, which mirrors `render_rewind_overlay`'s layout.
+    /// Geometry comes from `rewind_row_at`, which mirrors
+    /// `render_rewind_overlay`'s layout.
     pub(super) fn handle_rewind_mouse(&mut self, mouse: &MouseEvent) -> InputOutcome {
         use crate::views::rewind::{rewind_activate, rewind_row_at, set_rewind_cursor};
         let Some(rw) = self.rewind_state.as_mut() else {
@@ -212,6 +202,8 @@ mod sync_rewind_anchor_to_picker_tests {
                 available_commands_generation: 0,
                 available_tools: None,
                 model_switch_pending: false,
+                hook_block_hold: false,
+                blocked_prompt: None,
                 user_model_preference: None,
                 deferred_model_switch: None,
                 bg_tasks: std::collections::BTreeMap::new(),

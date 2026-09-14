@@ -16,10 +16,9 @@ pub(crate) fn set_unix_mode(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-/// Keep this crate's unit-test binary from writing synthetic events into
-/// the real unified log; pre-main so the redirect beats the lazily-opened
-/// writer. Integration binaries under `tests/` isolate via `TestSandbox`
-/// homes instead.
+/// Keep this crate's unit-test binary from writing synthetic events into the real unified log.
+/// Runs pre-main so the redirect beats the lazily-opened writer.
+/// Integration binaries under `tests/` isolate via `TestSandbox` homes instead.
 #[ctor::ctor]
 fn redirect_unified_log_for_tests() {
     xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
@@ -73,11 +72,8 @@ pub(crate) fn ensure_hermetic_git_on_path() {
                 let cur = std::env::var("PATH").unwrap_or_default();
                 unsafe {
                     std::env::set_var("PATH", format!("{}:{}", dir.display(), cur));
-                    // git-minimal spawns subcommands (`git stash` → `git
-                    // update-index`) through its exec path, which is baked to
-                    // a build-machine prefix. Helpers live next to the binary,
-                    // so point the exec path there. Skip the host-fallback
-                    // wrapper: host git must keep its own exec path.
+                    // git-minimal spawns subcommands (`git stash` invokes `git update-index`) through its exec path That path is baked to a build-machine prefix Helpers live next to the binary, so point the exec path there
+                    // Skip the host-fallback wrapper: host git must keep its own exec path
                     if p.file_name().is_some_and(|name| name == "git") {
                         std::env::set_var("GIT_EXEC_PATH", dir);
                     }
