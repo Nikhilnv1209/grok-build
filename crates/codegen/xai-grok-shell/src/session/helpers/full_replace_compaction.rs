@@ -127,6 +127,9 @@ impl CompactionSampler for ShellCompactionSampler {
             self.user_context.as_deref(),
             self.use_short_prompt,
             self.compaction_tool_tokens,
+            self.sampling_config
+                .max_inline_images
+                .and_then(|v| usize::try_from(v).ok()),
         );
         self.state.lock().unwrap().record_attempt(&chat_history);
 

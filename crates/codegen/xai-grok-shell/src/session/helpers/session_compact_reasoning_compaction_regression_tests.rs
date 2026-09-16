@@ -183,6 +183,7 @@ fn test_config(base_url: &str) -> SamplerConfig {
         max_retries: None,
         rate_limit_retry_threshold: None,
         stream_tool_calls: false,
+        max_inline_images: None,
         idle_timeout_secs: None,
         client_identifier: None,
         reasoning_effort: None,

@@ -216,6 +216,7 @@ impl ShellToolsetConfig {
             max_retries: None,
             rate_limit_retry_threshold: None,
             stream_tool_calls: false,
+            max_inline_images: None,
             idle_timeout_secs: None,
             client_identifier: None,
             deployment_id: None,

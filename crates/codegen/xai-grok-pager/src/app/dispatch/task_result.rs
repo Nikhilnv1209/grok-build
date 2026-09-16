@@ -487,14 +487,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             agent_id,
             session_id,
             models: new_models,
-            scheduler_background_loops,
         } => {
             let mut effects = handle_session_created(
                 app,
                 agent_id,
                 session_id,
                 new_models,
-                scheduler_background_loops,
             );
             effects.extend(super::providers::auto_refresh_once_per_run());
             effects
@@ -624,7 +622,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             restore_summary,
             restore_degree,
             running_prompt_id,
-            scheduler_background_loops,
         } => {
             let mut effects = handle_session_loaded(
                 app,
@@ -635,7 +632,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 restore_summary,
                 restore_degree,
                 running_prompt_id,
-                scheduler_background_loops,
             );
             // Covers the resume path: a run that started before any session
             // was created still refreshes exactly once, here.

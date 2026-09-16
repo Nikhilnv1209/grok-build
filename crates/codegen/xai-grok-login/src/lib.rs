@@ -68,8 +68,11 @@ pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use manager::{AuthManager, shared_api_key_provider};
 pub use manager::{AuthRemedy, CachedTokenState, SilentRefresh};
 pub use meta::{AuthMeta, GateInfo};
-pub use model::{AuthMode, GrokAuth, lookup_auth};
+pub use model::{AuthMode, AuthStore, GrokAuth, lookup_auth};
 pub use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};
 pub use refresh::DiagnosticUploader;
 pub use storage::auth_json_path;
-pub use storage::{clear_api_key, read_api_key, read_auth_json, store_api_key};
+pub use storage::{
+    clear_api_key, read_api_key, read_auth_json, read_auth_json_or_empty_recovering_corrupt,
+    store_api_key, write_auth_json,
+};

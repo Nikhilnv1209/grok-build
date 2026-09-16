@@ -1101,6 +1101,11 @@ pub struct SamplingConfig {
     /// API request body so the upstream emits per-chunk argument deltas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
+    /// Per-request cap on inline image parts (user attachments + tool results) carried
+    /// in the resent conversation. Oldest images beyond the cap are evicted to placeholder
+    /// text before the request is built. `None` = no count cap (byte budget only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_inline_images: Option<u32>,
 }
 
 // ============ Responses API wrapper ============

@@ -107,30 +107,47 @@ pub struct BudgetedConversation {
     pub outcome: ImageBudgetOutcome,
 }
 
-/// Applies the production 47 MiB trigger and 25 MiB reclaim target.
+/// Applies the production 47 MiB trigger and 25 MiB reclaim target with no image-count cap.
 #[must_use]
 pub fn apply_image_budget(items: Vec<ConversationItem>) -> BudgetedConversation {
-    apply_image_budget_with_limits(
-        items,
-        IMAGE_COMPACT_TRIGGER_BYTES,
-        IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
-    )
+    apply_image_budget_with_limits(items, IMAGE_COMPACT_TRIGGER_BYTES, IMAGE_COMPACT_RECLAIM_TARGET_BYTES)
 }
 
-/// Applies an explicit high-water trigger and low-water reclaim target.
+/// Applies an explicit high-water trigger and low-water reclaim target (no count cap).
 /// Callers that add request fields outside the conversation can subtract those bytes from both limits.
 #[must_use]
 pub fn apply_image_budget_with_limits(
-    mut items: Vec<ConversationItem>,
+    items: Vec<ConversationItem>,
     trigger_bytes: usize,
     reclaim_target_bytes: usize,
 ) -> BudgetedConversation {
+    apply_image_budget_with_count_limits(items, trigger_bytes, reclaim_target_bytes, None)
+}
+
+/// Applies the byte budget plus an optional per-request cap on inline image parts.
+/// Providers limit images by **count** (e.g. at most 8 per request) independently of the
+/// 50 MiB body ceiling, so the cap evicts oldest-first until at most `max_inline_images`
+/// image parts remain across user items and tool results. `None` disables the cap.
+#[must_use]
+pub fn apply_image_budget_with_count_limits(
+    mut items: Vec<ConversationItem>,
+    trigger_bytes: usize,
+    reclaim_target_bytes: usize,
+    max_inline_images: Option<usize>,
+) -> BudgetedConversation {
     let body_bytes = conversation_body_bytes(&items);
     let inline_images = inline_image_count(&items);
-    let needs_image_compaction = body_bytes >= trigger_bytes;
+    let over_count = max_inline_images.is_some_and(|max| inline_images > max);
+    let needs_image_compaction = body_bytes >= trigger_bytes || over_count;
     let mut evicted = 0;
-    if needs_image_compaction && body_bytes > reclaim_target_bytes {
-        evicted = evict_images_to_budget(&mut items, body_bytes, reclaim_target_bytes);
+    if needs_image_compaction {
+        evicted = evict_images_to_budget(
+            &mut items,
+            body_bytes,
+            reclaim_target_bytes,
+            inline_images,
+            max_inline_images,
+        );
     }
     let body_bytes_after = if evicted == 0 {
         body_bytes
@@ -211,6 +228,8 @@ fn evict_images_to_budget(
     conversation: &mut [ConversationItem],
     current_bytes: usize,
     target_bytes: usize,
+    total_images: usize,
+    max_inline_images: Option<usize>,
 ) -> usize {
     let placeholder = ContentPart::Text {
         text: std::sync::Arc::<str>::from(IMAGE_COMPACT_PLACEHOLDER),
@@ -248,10 +267,15 @@ fn evict_images_to_budget(
         }
     }
 
+    // Oldest first. Each eviction removes exactly one inline image part, so it serves
+    // both the byte reclaim and the count cap; the loop stops once both are satisfied.
     let mut running = current_bytes;
+    let mut remaining = total_images;
     let mut evicted = 0;
     for (location, image_bytes) in images {
-        if running <= target_bytes {
+        let bytes_satisfied = running <= target_bytes;
+        let count_satisfied = max_inline_images.is_none_or(|max| remaining <= max);
+        if bytes_satisfied && count_satisfied {
             break;
         }
         match location {
@@ -282,6 +306,7 @@ fn evict_images_to_budget(
             }
         }
         evicted += 1;
+        remaining = remaining.saturating_sub(1);
     }
     evicted
 }
@@ -517,6 +542,120 @@ mod tests {
         assert_eq!(
             serde_json::to_value(below_trigger.items).unwrap(),
             serde_json::to_value(history).unwrap()
+        );
+    }
+
+    #[test]
+    fn count_cap_at_or_below_total_keeps_every_image() {
+        let history = mixed_history();
+        let expected = serde_json::to_value(&history).unwrap();
+        for cap in [6usize, 7, usize::MAX] {
+            let budgeted = apply_image_budget_with_count_limits(
+                history.clone(),
+                IMAGE_COMPACT_TRIGGER_BYTES,
+                IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
+                Some(cap),
+            );
+            assert!(!budgeted.outcome.needs_image_compaction, "cap {cap}");
+            assert_eq!(budgeted.outcome.evicted, 0, "cap {cap}");
+            assert_eq!(
+                serde_json::to_value(&budgeted.items).unwrap(),
+                expected,
+                "cap {cap}"
+            );
+        }
+    }
+
+    #[test]
+    fn count_cap_evicts_oldest_images_first() {
+        // 6 inline images, cap 3: the three oldest (user image + two tool-result images)
+        // become placeholders; the newest user image and both remaining tool images stay.
+        let expected = expected_after_three_evictions();
+        let budgeted = apply_image_budget_with_count_limits(
+            mixed_history(),
+            IMAGE_COMPACT_TRIGGER_BYTES,
+            IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
+            Some(3),
+        );
+        assert_eq!(
+            serde_json::to_value(&budgeted.items).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert!(budgeted.outcome.needs_image_compaction);
+        assert_eq!(budgeted.outcome.inline_images, 6);
+        assert_eq!(budgeted.outcome.evicted, 3);
+    }
+
+    #[test]
+    fn count_cap_zero_evicts_every_image() {
+        let budgeted = apply_image_budget_with_count_limits(
+            mixed_history(),
+            IMAGE_COMPACT_TRIGGER_BYTES,
+            IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
+            Some(0),
+        );
+        assert_eq!(budgeted.outcome.evicted, 6);
+        let images_left = inline_image_count(&budgeted.items);
+        assert_eq!(images_left, 0);
+        // The kept text parts are untouched; only image parts became placeholders.
+        let ConversationItem::ToolResult(tool_result) = &budgeted.items[2] else {
+            unreachable!()
+        };
+        assert_eq!(tool_result.images.len(), 1);
+        assert!(
+            matches!(&tool_result.images[..], [ContentPart::Text { text }] if text.as_ref() == "metadata")
+        );
+    }
+
+    #[test]
+    fn count_cap_fires_below_the_byte_trigger() {
+        // Nine tiny images fit the byte budget easily but exceed a cap of 8.
+        let history: Vec<_> = (0..9)
+            .map(|i| {
+                ConversationItem::user_with_parts(vec![data_image(
+                    char::from(b'A' + i as u8),
+                    500,
+                )])
+            })
+            .collect();
+        let body = conversation_body_bytes(&history);
+        assert!(body < IMAGE_COMPACT_TRIGGER_BYTES);
+        let budgeted = apply_image_budget_with_count_limits(
+            history,
+            IMAGE_COMPACT_TRIGGER_BYTES,
+            IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
+            Some(8),
+        );
+        assert!(budgeted.outcome.needs_image_compaction);
+        assert_eq!(budgeted.outcome.evicted, 1);
+        assert_eq!(inline_image_count(&budgeted.items), 8);
+        // The evicted image is the oldest one.
+        assert!(
+            matches!(&budgeted.items[0], ConversationItem::User(user)
+                if matches!(user.content.first(), Some(ContentPart::Text { text }) if text.as_ref() == IMAGE_COMPACT_PLACEHOLDER))
+        );
+    }
+
+    #[test]
+    fn count_and_byte_budgets_stop_independently() {
+        // Cap 5 on the 6-image history evicts one oldest image even when bytes are satisfied;
+        // the byte budget alone would have evicted nothing below its trigger.
+        let history = mixed_history();
+        let bytes = conversation_body_bytes(&history);
+        assert!(bytes < IMAGE_COMPACT_TRIGGER_BYTES);
+        let budgeted = apply_image_budget_with_count_limits(
+            history,
+            IMAGE_COMPACT_TRIGGER_BYTES,
+            IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
+            Some(5),
+        );
+        assert_eq!(budgeted.outcome.evicted, 1);
+        let ConversationItem::User(user) = &budgeted.items[0] else {
+            unreachable!()
+        };
+        assert!(matches!(user.content[1], ContentPart::Text { .. }));
+        assert!(
+            matches!(&user.content[0], ContentPart::Text { text } if text.as_ref() == "old user")
         );
     }
 }

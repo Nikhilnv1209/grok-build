@@ -74,6 +74,7 @@ async fn create_test_actor(
             reasoning_effort: None,
             thinking: None,
             stream_tool_calls: None,
+            max_inline_images: None,
         },
         Box::new(xai_chat_state::NullChatPersistence),
         chat_event_tx,

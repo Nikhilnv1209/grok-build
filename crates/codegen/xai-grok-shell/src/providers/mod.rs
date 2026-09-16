@@ -397,6 +397,9 @@ fn model_entry(spec: &ProviderSpec, model: &ProviderModel) -> ModelEntry {
         agent_type: crate::agent::config::default_agent_type(),
         inference_idle_timeout_secs: None,
         max_retries: None,
+        rate_limit_retry_threshold: None,
+        subagent_rate_limit_max_attempts: None,
+        variants: Vec::new(),
         api_key: None,
         env_key: Some(EnvKeys::new(spec.env_keys.iter().copied())),
         extra_headers: IndexMap::new(),
@@ -411,6 +414,7 @@ fn model_entry(spec: &ProviderSpec, model: &ProviderModel) -> ModelEntry {
         compaction_at_tokens: None,
         show_model_fingerprint: false,
         stream_tool_calls: None,
+        max_inline_images: None,
         laziness_detector: Default::default(),
     };
     let mut entry = ModelEntry::from_config_entry(&config);
@@ -426,7 +430,7 @@ fn reasoning_menu(values: &[ReasoningEffort], default: Option<ReasoningEffort>) 
     values
         .iter()
         .map(|value| ReasoningEffortOption {
-            id: value.as_str().to_string(),
+            id: value.to_string(),
             value: *value,
             label: format!("{value:?}"),
             description: None,

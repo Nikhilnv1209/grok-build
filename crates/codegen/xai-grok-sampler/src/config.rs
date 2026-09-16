@@ -60,6 +60,10 @@ pub struct SamplerConfig {
     #[serde(default)]
     pub rate_limit_retry_threshold: Option<u32>,
     pub stream_tool_calls: bool,
+    /// Per-request cap on inline image parts carried in the resent conversation.
+    /// Enforced by the chat-state request builder, not the sampler; `None` = no count cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_inline_images: Option<u32>,
     pub idle_timeout_secs: Option<u64>,
 
     // Reasoning effort
@@ -134,6 +138,7 @@ impl Default for SamplerConfig {
             max_retries: None,
             rate_limit_retry_threshold: None,
             stream_tool_calls: false,
+            max_inline_images: None,
             idle_timeout_secs: None,
             reasoning_effort: None,
             thinking: None,

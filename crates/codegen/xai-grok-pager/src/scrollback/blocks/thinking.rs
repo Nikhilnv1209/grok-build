@@ -523,6 +523,7 @@ impl BlockContent for ThinkingBlock {
         if rail_under_bullet(ctx) {
             return None;
         }
+        let cfg = &ctx.appearance.scrollback.blocks.thinking;
         // Collapsed with a body preview keeps a static thinking accent so the
         // multi-line panel is scannable (parity with tool success/error bars).
         // Header-only collapsed (preview disabled / empty / still running path)

@@ -3,7 +3,7 @@
 use xai_chat_state::compaction_utils::ModelRequestHistory;
 use xai_chat_state::image_budget::{
     IMAGE_COMPACT_RECLAIM_TARGET_BYTES, IMAGE_COMPACT_TRIGGER_BYTES, ImageBudgetOutcome,
-    apply_image_budget_with_limits,
+    apply_image_budget_with_count_limits,
 };
 use xai_grok_sampling_types::ConversationItem;
 
@@ -37,34 +37,47 @@ impl From<PreparedCompactionHistory> for CompactionHistoryInput {
 
 impl CompactionHistoryInput {
     /// Budget raw direct-call history once; preserve an already-prepared history verbatim.
-    pub(crate) fn prepare(self, compaction_tool_tokens: u64) -> PreparedCompactionHistory {
+    pub(crate) fn prepare(
+        self,
+        compaction_tool_tokens: u64,
+        max_inline_images: Option<usize>,
+    ) -> PreparedCompactionHistory {
         match self {
-            Self::Raw(items) => prepare_items(items, compaction_tool_tokens),
+            Self::Raw(items) => prepare_items(items, compaction_tool_tokens, max_inline_images),
             Self::Prepared(history) => history,
         }
     }
 }
 
 /// Append the summarization prompt, then apply the compaction request's image budget once.
+/// `max_inline_images` is the model's per-request inline-image count cap (the compaction
+/// request hits the same provider, so a count-limited provider must not receive more).
 pub(crate) fn build_compaction_chat_history(
     mut chat_history: Vec<ConversationItem>,
     user_context: Option<&str>,
     use_short_prompt: bool,
     compaction_tool_tokens: u64,
+    max_inline_images: Option<usize>,
 ) -> PreparedCompactionHistory {
     let prompt = build_compaction_prompt(user_context, use_short_prompt);
     chat_history.push(ConversationItem::user(prompt));
-    prepare_items(chat_history, compaction_tool_tokens)
+    prepare_items(chat_history, compaction_tool_tokens, max_inline_images)
 }
 
 fn prepare_items(
     items: Vec<ConversationItem>,
     compaction_tool_tokens: u64,
+    max_inline_images: Option<usize>,
 ) -> PreparedCompactionHistory {
     let (trigger_bytes, reclaim_target_bytes) =
         effective_image_budget_limits(compaction_tool_tokens);
     let items = ModelRequestHistory::from_raw(items).into_items();
-    let budgeted = apply_image_budget_with_limits(items, trigger_bytes, reclaim_target_bytes);
+    let budgeted = apply_image_budget_with_count_limits(
+        items,
+        trigger_bytes,
+        reclaim_target_bytes,
+        max_inline_images,
+    );
     PreparedCompactionHistory {
         items: budgeted.items,
         image_budget: budgeted.outcome,

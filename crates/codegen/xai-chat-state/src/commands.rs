@@ -446,6 +446,7 @@ mod tests {
                 reasoning_effort: None,
                 thinking: None,
                 stream_tool_calls: None,
+                max_inline_images: None,
             }),
         };
         let _ = ChatStateCommand::RecordAgentEditedPath {

@@ -4,7 +4,10 @@ use xai_grok_sampling_types::{ConversationItem, ConversationRequest, ToolSpec, T
 
 use super::ChatStateActor;
 use crate::events::ChatStateEvent;
-use crate::image_budget::{ImageBudgetOutcome, apply_image_budget};
+use crate::image_budget::{
+    IMAGE_COMPACT_RECLAIM_TARGET_BYTES, IMAGE_COMPACT_TRIGGER_BYTES, ImageBudgetOutcome,
+    apply_image_budget_with_count_limits,
+};
 use crate::types::PruningConfig;
 
 /// Placeholder inserted when a tool result is hard-cleared.
@@ -45,7 +48,17 @@ impl ChatStateActor {
             }
             self.rebase_turn_capture_offset();
         }
-        let budgeted = apply_image_budget(self.state.conversation.clone());
+        let max_inline_images = self
+            .state
+            .sampling_config
+            .max_inline_images
+            .and_then(|v| usize::try_from(v).ok());
+        let budgeted = apply_image_budget_with_count_limits(
+            self.state.conversation.clone(),
+            IMAGE_COMPACT_TRIGGER_BYTES,
+            IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
+            max_inline_images,
+        );
         let ImageBudgetOutcome {
             body_bytes,
             body_bytes_after,
@@ -60,6 +73,7 @@ impl ChatStateActor {
                 trigger_bytes: crate::image_budget::IMAGE_COMPACT_TRIGGER_BYTES,
                 reclaim_target_bytes: crate::image_budget::IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
                 inline_images,
+                max_inline_images,
                 needs_image_compaction,
                 evicted,
                 body_bytes_after,

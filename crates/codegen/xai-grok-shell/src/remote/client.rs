@@ -794,6 +794,9 @@ pub(crate) fn parse_remote_model_value(
             .get("streamToolCalls")
             .or_else(|| obj.get("stream_tool_calls"))
             .and_then(|v| v.as_bool()),
+        max_inline_images: get_u64(obj, "maxInlineImages")
+            .or_else(|| get_u64(obj, "max_inline_images"))
+            .and_then(|v| u32::try_from(v).ok()),
         laziness_detector: get_object(obj, "lazinessDetector")
             .or_else(|| get_object(obj, "laziness_detector"))
             .or_else(|| meta.and_then(|m| get_object(m, "lazinessDetector")))

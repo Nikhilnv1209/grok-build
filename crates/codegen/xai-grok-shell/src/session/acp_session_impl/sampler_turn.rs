@@ -648,6 +648,7 @@ impl SessionActor {
                 reasoning_effort: None,
                 thinking: None,
                 stream_tool_calls: None,
+                max_inline_images: None,
             });
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
@@ -735,6 +736,7 @@ impl SessionActor {
             max_retries: cfg.max_retries.or(Some(self.max_retries)),
             rate_limit_retry_threshold: cfg.rate_limit_retry_threshold,
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
+            max_inline_images: cfg.max_inline_images,
             idle_timeout_secs: None,
             client_identifier: self.client_identifier.clone(),
             deployment_id: crate::managed_config::resolve_deployment_id(

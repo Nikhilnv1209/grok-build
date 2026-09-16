@@ -3332,6 +3332,7 @@ pub(crate) fn resolve_model_list(
         resolved = prefetched;
     }
     crate::providers::hydrate_connected_models(&mut resolved);
+    let mut explicit_api_backend_keys = std::collections::HashSet::new();
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
         let base = resolved.shift_remove(key);
@@ -3647,6 +3648,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 compaction_at_tokens: m.compaction_at_tokens,
                 show_model_fingerprint: m.show_model_fingerprint,
                 stream_tool_calls: None,
+                max_inline_images: None,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
             };
             (key, config)
@@ -3766,6 +3768,10 @@ pub struct ModelEntryConfig {
     /// Per-model opt-in: BYOK endpoints that don't understand the flag should leave this unset to avoid request errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
+    /// Per-request cap on inline image parts in the resent conversation; oldest images beyond
+    /// the cap become placeholder text. For providers that limit images per request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_inline_images: Option<u32>,
     /// Per-model Layer-3 LazinessDetector configuration.
     /// Defaults to the all-disabled state via `#[serde(default)]`.
     #[serde(default, skip_serializing_if = "is_default_laziness_detector")]
@@ -3834,6 +3840,8 @@ pub struct ConfigModelOverride {
     pub compaction_at_tokens: Option<CompactionAtTokens>,
     pub show_model_fingerprint: Option<bool>,
     pub stream_tool_calls: Option<bool>,
+    /// Per-request cap on inline image parts in the resent conversation.
+    pub max_inline_images: Option<u32>,
 }
 impl ConfigModelOverride {
     pub(crate) fn apply(
@@ -3940,6 +3948,9 @@ impl ConfigModelOverride {
         if self.stream_tool_calls.is_some() {
             entry.info.stream_tool_calls = self.stream_tool_calls;
         }
+        if self.max_inline_images.is_some() {
+            entry.info.max_inline_images = self.max_inline_images;
+        }
         if self.api_key.is_some() {
             entry.api_key.clone_from(&self.api_key);
         }
@@ -4033,6 +4044,10 @@ pub struct ModelInfo {
     pub show_model_fingerprint: bool,
     /// When `Some(true)`, the sampler injects `stream_tool_calls: true`
     pub stream_tool_calls: Option<bool>,
+    /// Per-request cap on inline image parts (user attachments + tool results) sent in the
+    /// resent conversation. Oldest images beyond the cap become placeholder text. For
+    /// providers that limit images per request (e.g. at most 8). `None` = no count cap.
+    pub max_inline_images: Option<u32>,
     /// Per-model Layer-3 LazinessDetector configuration. Defaults to the all-disabled state.
     /// The feature is per-model opt-in, with a second-step `max_nudges_per_session > 0` opt-in for actually injecting nudges.
     /// See [`LazinessDetectorPerModelConfig`].
@@ -4079,6 +4094,7 @@ impl ModelInfo {
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            max_inline_images: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         }
     }
@@ -4119,6 +4135,7 @@ impl ModelInfo {
             compaction_at_tokens: entry.compaction_at_tokens,
             show_model_fingerprint: entry.show_model_fingerprint,
             stream_tool_calls: entry.stream_tool_calls,
+            max_inline_images: entry.max_inline_images,
             laziness_detector: entry.laziness_detector.clone(),
         }
     }
@@ -4823,6 +4840,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 compaction_at_tokens: None,
                 show_model_fingerprint: false,
                 stream_tool_calls: None,
+                max_inline_images: None,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
             },
             mtls_cert_dir: None,
@@ -4966,6 +4984,7 @@ pub(crate) fn sampling_config_for_model(
         max_retries: info.max_retries,
         rate_limit_retry_threshold: info.rate_limit_retry_threshold,
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),
+        max_inline_images: info.max_inline_images,
         idle_timeout_secs: None,
         client_identifier: None,
         deployment_id,
@@ -5047,6 +5066,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            max_inline_images: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         },
         mtls_cert_dir: None,

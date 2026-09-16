@@ -309,6 +309,7 @@ async fn create_test_actor_inner(
             reasoning_effort: None,
             thinking: None,
             stream_tool_calls: None,
+            max_inline_images: None,
         },
         chat_persistence,
         chat_event_tx,

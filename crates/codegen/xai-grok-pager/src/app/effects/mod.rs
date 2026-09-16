@@ -5005,7 +5005,7 @@ pub(crate) fn execute(
                 }
             });
         }
-        Effect::FetchAppBilling => {
+        Effect::FetchAppBilling { nonce } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -5425,6 +5425,40 @@ fn prompt_request_meta(
         map.insert("screenMode".into(), serde_json::Value::String(mode.into()));
     }
     serde_json::Value::Object(map)
+}
+/// Build the `session/cancel` `_meta`, shared by the TUI cancel effect and the headless fail-safe so the wire shape has one owner.
+/// The rewind is a request, not a command: the shell re-checks rewindable and prompt identity.
+pub(crate) fn cancel_notification_meta(
+    cancel_subagents: bool,
+    trigger: Option<&str>,
+    rewind_prompt_id: Option<&str>,
+) -> acp::Meta {
+    let mut meta = acp::Meta::new();
+    meta.insert("cancelSubagents".into(), cancel_subagents.into());
+    if let Some(trigger) = trigger {
+        meta.insert(
+            crate::app::turn_completion::CANCEL_TRIGGER_KEY.into(),
+            trigger.into(),
+        );
+    }
+    if let Some(pid) = rewind_prompt_id {
+        meta.insert("rewindIfNoOutput".into(), true.into());
+        meta.insert("rewindIfPristine".into(), true.into());
+        meta.insert("promptId".into(), pid.into());
+    }
+    meta
+}
+pub(crate) const REWIND_MODE_WIRE: &str = "conversation_only";
+pub(crate) fn rewind_execute_params(
+    session_id: &str,
+    target_prompt_index: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": session_id,
+        "targetPromptIndex": target_prompt_index,
+        "force": true,
+        "mode": REWIND_MODE_WIRE,
+    })
 }
 /// Build the `x.ai/interject` params. The optional structured `content`
 /// (text + images) is omitted ENTIRELY when `None` so the legacy wire

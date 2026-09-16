@@ -14,7 +14,6 @@ pub mod app;
 pub mod best_effort_stderr;
 pub mod client_identity;
 pub mod completions_cmd;
-pub mod connect_cmd;
 mod config_toml_edit;
 pub mod diagnostics;
 pub mod disk_usage_cmd;

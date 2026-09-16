@@ -1021,6 +1021,7 @@ pub(crate) fn format_activity_label(activity: &crate::acp::tracker::TurnActivity
             attempt,
             max_retries,
             reason,
+            ..
         } => {
             let cause = crate::acp::tracker::clamp_activity_subject(reason);
             if cause.is_empty() {

@@ -52,6 +52,18 @@ pub enum Scenario {
 }
 
 impl Scenario {
+    /// Stable label for tracing and reporting; mirrors the scenario module names.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scenario::ScrollStress => "scroll_stress",
+            Scenario::StreamingRender => "streaming_render",
+            Scenario::ResizeStorm => "resize_storm",
+            Scenario::LargeCodeblock => "large_codeblock",
+            Scenario::IdleCost => "idle_cost",
+            Scenario::MixedInteraction => "mixed_interaction",
+        }
+    }
+
     /// Every scenario, in dispatch order.
     pub const ALL: &'static [Scenario] = &[
         Scenario::ScrollStress,

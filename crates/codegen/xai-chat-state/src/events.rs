@@ -28,7 +28,9 @@ pub enum ChatStateEvent {
         reclaim_target_bytes: usize,
         /// Inline images present before eviction.
         inline_images: usize,
-        /// Whether the body crossed the trigger this turn.
+        /// Per-request inline-image count cap from the model config; `None` = uncapped.
+        max_inline_images: Option<usize>,
+        /// Whether the body crossed the trigger (or the count cap was exceeded) this turn.
         needs_image_compaction: bool,
         /// Images replaced with a placeholder this turn.
         evicted: usize,

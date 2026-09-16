@@ -2332,16 +2332,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 xai_grok_shell::agent::init::run_cli_logout(&config.grok_com_config)?;
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
-            Command::Connect(connect_args) => {
-                init_tracing_simple("cli");
-                xai_grok_pager::connect_cmd::run_connect(connect_args)?;
-                xai_grok_shell::instrumentation::finalize_and_exit(0);
-            }
-            Command::Disconnect(disconnect_args) => {
-                init_tracing_simple("cli");
-                xai_grok_pager::connect_cmd::run_disconnect(disconnect_args)?;
-                xai_grok_shell::instrumentation::finalize_and_exit(0);
-            }
             Command::Wrap(ref wrap_args) => {
                 return xai_grok_pager::wrap_cmd::run(wrap_args);
             }
