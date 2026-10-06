@@ -390,14 +390,6 @@ impl AgentView {
                 ProviderDialogOutcome::Disconnect(provider) => {
                     return InputOutcome::Action(Action::DisconnectProvider(provider));
                 }
-                ProviderDialogOutcome::Refresh(provider) => {
-                    return InputOutcome::Action(Action::RefreshProviderModels {
-                        provider: Some(provider),
-                    });
-                }
-                ProviderDialogOutcome::RefreshAll => {
-                    return InputOutcome::Action(Action::RefreshProviderModels { provider: None });
-                }
                 ProviderDialogOutcome::Changed => return InputOutcome::Changed,
             }
         }

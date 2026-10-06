@@ -488,14 +488,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             session_id,
             models: new_models,
         } => {
-            let mut effects = handle_session_created(
+            handle_session_created(
                 app,
                 agent_id,
                 session_id,
                 new_models,
-            );
-            effects.extend(super::providers::auto_refresh_once_per_run());
-            effects
+            )
         }
         TaskResult::SessionFailed { agent_id, error } => {
             handle_session_failed(app, agent_id, error)
@@ -623,7 +621,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             restore_degree,
             running_prompt_id,
         } => {
-            let mut effects = handle_session_loaded(
+            handle_session_loaded(
                 app,
                 agent_id,
                 session_id,
@@ -632,11 +630,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 restore_summary,
                 restore_degree,
                 running_prompt_id,
-            );
-            // Covers the resume path: a run that started before any session
-            // was created still refreshes exactly once, here.
-            effects.extend(super::providers::auto_refresh_once_per_run());
-            effects
+            )
         }
         TaskResult::SessionMetaFromDisk {
             agent_id,
@@ -1403,40 +1397,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::ModelsReloadFailed { error } => {
             app.show_toast(&format!("Model refresh failed: {error}"));
             vec![]
-        }
-        TaskResult::ProviderCatalogsRefreshed {
-            requested,
-            refreshed,
-            failures,
-        } => {
-            // Clear the in-flight marker(s) in the open provider dialog.
-            if let Some(agent) = get_active_agent_mut(app)
-                && let Some(crate::views::modal::ActiveModal::Providers { state }) =
-                    agent.active_modal.as_mut()
-            {
-                state.set_refreshing(requested.as_deref(), false);
-            }
-            if !refreshed.is_empty() {
-                let summary = if requested.is_some() {
-                    format!("Refreshed {}", refreshed.join(", "))
-                } else {
-                    format!(
-                        "Refreshed {} provider{}",
-                        refreshed.len(),
-                        if refreshed.len() == 1 { "" } else { "s" }
-                    )
-                };
-                app.show_toast(&summary);
-                // The caches changed on disk; make the agent re-resolve its
-                // catalog so the picker reflects new models immediately.
-                vec![Effect::ReloadAgentModels]
-            } else if let Some(first) = failures.first() {
-                app.show_toast(&format!("Provider refresh failed: {first}"));
-                vec![]
-            } else {
-                app.show_toast("No connected providers to refresh.");
-                vec![]
-            }
         }
         TaskResult::RenameSessionFailed { agent_id, error } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {

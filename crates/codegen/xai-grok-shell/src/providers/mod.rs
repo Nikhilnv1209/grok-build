@@ -1,28 +1,26 @@
 //! Built-in open-source inference providers (Umans, DeepSeek, OpenCode, Command Code).
 //!
 //! Connect stores an API key in `auth.json` under `provider:<id>`. The catalog
-//! hydrates those models into the existing `[model.*]` merge so `/model` and
-//! the sampler stay unchanged.
+//! describes those models so `/model` and the sampler stay unchanged.
 //!
-//! Model lists come from the models.dev snapshot for Umans / DeepSeek /
-//! OpenCode and from the provider's own `/v1/models` for Command Code.
+//! Model lists come from the checked-in models.dev snapshot for Umans /
+//! DeepSeek / OpenCode and from a checked-in open-weight list for Command
+//! Code. Nothing here reaches the network: there is no refresh, so model
+//! metadata is whatever ships in the binary.
 
 mod catalog;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use indexmap::IndexMap;
-
 use crate::agent::config::{EnvKeys, ModelEntry};
 use crate::auth::{AuthProviderRef, AuthStore};
 use crate::sampling::ApiBackend;
 use xai_grok_sampler::AuthScheme;
-use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
+use xai_grok_sampling_types::ReasoningEffort;
 
 pub use catalog::{
-    base_url, builtin_providers, commandcode_cache_path, commandcode_models,
-    fetch_models_dev_blocking, models_dev_live_cache_path, snapshot_models, ProviderSpec,
+    base_url, builtin_providers, commandcode_models, snapshot_models, ProviderSpec,
 };
 
 const PROVIDER_SCOPE_PREFIX: &str = "provider:";
@@ -85,129 +83,12 @@ pub fn env_belongs_to_provider(env_name: &str) -> Option<&'static ProviderSpec> 
         .find(|spec| spec.env_keys.iter().any(|key| *key == env_name))
 }
 
-/// All models a provider can serve today. Snapshot-backed for the models.dev
-/// providers; for Command Code, prefer the last fetched `/v1/models` response
-/// and fall back to the checked-in open-weight list.
+/// All models a provider can serve today, from the checked-in catalog.
 pub fn provider_models(spec: &ProviderSpec) -> Vec<ProviderModel> {
     match spec.id {
-        "commandcode" => {
-            let cache = std::fs::read_to_string(commandcode_cache_path()).ok();
-            commandcode_models(cache.as_deref())
-        }
+        "commandcode" => commandcode_models(),
         _ => snapshot_models(spec),
     }
-}
-
-/// Refetch a provider's live catalog and persist it to the on-disk cache.
-/// Snapshot-backed providers (Umans/DeepSeek/OpenCode) share one models.dev
-/// download; Command Code fetches its own `/v1/models` with the given key.
-pub fn refresh_provider_models(spec: &ProviderSpec, api_key: &str) -> anyhow::Result<()> {
-    if spec.id == "commandcode" {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()?;
-        let response = client
-            .get(format!("{}/models", base_url(spec)))
-            .header("Authorization", format!("Bearer {}", api_key.trim()))
-            .send()?;
-        if !response.status().is_success() {
-            anyhow::bail!(
-                "Command Code /models returned {} — check your API key.",
-                response.status()
-            );
-        }
-        let body = response.text()?;
-        let models = commandcode_models(Some(&body));
-        if models.is_empty() {
-            anyhow::bail!("Command Code /models returned no models");
-        }
-        std::fs::write(commandcode_cache_path(), body)?;
-        return Ok(());
-    }
-    // Snapshot-backed: one shared models.dev download covers them all.
-    catalog::fetch_models_dev_blocking()?;
-    Ok(())
-}
-
-/// Result of refreshing one provider inside
-/// [`refresh_connected_providers_blocking`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProviderRefreshStatus {
-    /// Live catalog fetched; this many models are now resolvable.
-    Refreshed { models: usize },
-    /// Provider has no stored key and no env key, so there is nothing to
-    /// authenticate a refresh with.
-    SkippedNotConnected,
-    /// The network or parse step failed.
-    Failed { error: String },
-}
-
-/// One provider's refresh result, in registry order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderRefreshOutcome {
-    pub provider_id: &'static str,
-    pub status: ProviderRefreshStatus,
-}
-
-impl ProviderRefreshOutcome {
-    pub fn is_refreshed(&self) -> bool {
-        matches!(self.status, ProviderRefreshStatus::Refreshed { .. })
-    }
-}
-
-/// Refresh every connected provider's live catalog (blocking — call from a
-/// background thread). Umans/DeepSeek/OpenCode share a single models.dev
-/// fetch; Command Code uses its stored/env key. Providers that are not
-/// connected are reported as skipped so the UI can say why nothing happened.
-pub fn refresh_connected_providers_blocking() -> Vec<ProviderRefreshOutcome> {
-    let mut outcomes = Vec::new();
-    let mut models_dev_done = false;
-    for spec in builtin_providers() {
-        if !is_connected(spec) || (spec.models_dev_ids.is_empty() && spec.id != "commandcode") {
-            outcomes.push(ProviderRefreshOutcome {
-                provider_id: spec.id,
-                status: ProviderRefreshStatus::SkippedNotConnected,
-            });
-            continue;
-        }
-        let result = if spec.id == "commandcode" {
-            let key = read_stored_key(spec.id).or_else(|| {
-                set_env_names(spec)
-                    .first()
-                    .and_then(|name| std::env::var(name).ok())
-            });
-            match key {
-                Some(key) => refresh_provider_models(spec, &key),
-                None => Err(anyhow::anyhow!(
-                    "no API key found (auth.json or {})",
-                    spec.env_keys.join(" or ")
-                )),
-            }
-        } else {
-            // Dedupe the shared models.dev download across providers.
-            if models_dev_done {
-                Ok(()) as anyhow::Result<()>
-            } else {
-                models_dev_done = true;
-                refresh_provider_models(spec, "")
-            }
-        };
-        match result {
-            Ok(()) => outcomes.push(ProviderRefreshOutcome {
-                provider_id: spec.id,
-                status: ProviderRefreshStatus::Refreshed {
-                    models: provider_models(spec).len(),
-                },
-            }),
-            Err(error) => outcomes.push(ProviderRefreshOutcome {
-                provider_id: spec.id,
-                status: ProviderRefreshStatus::Failed {
-                    error: error.to_string(),
-                },
-            }),
-        }
-    }
-    outcomes
 }
 
 /// `auth.json` lookup is skipped in `cargo test` unless `GROK_HOME` is set, so
@@ -311,23 +192,6 @@ pub fn stored_credentials_fingerprint(store: &AuthStore) -> u64 {
     hasher.finish()
 }
 
-/// Insert connected-provider models. Existing slugs (defaults, prefetch, user
-/// `[model.*]`) win — call this after those layers, then let config overrides
-/// run again if you need user fields to beat the built-in row.
-pub fn hydrate_connected_models(resolved: &mut IndexMap<String, ModelEntry>) {
-    for spec in builtin_providers() {
-        if !is_connected(spec) {
-            continue;
-        }
-        for model in provider_models(spec) {
-            if resolved.contains_key(&model.slug) {
-                continue;
-            }
-            resolved.insert(model.slug.clone(), model_entry(spec, &model));
-        }
-    }
-}
-
 /// Whether a model speaks the DeepSeek OpenAI-compatible dialect: a
 /// `thinking: { type: "enabled" }` envelope alongside `reasoning_effort`, plus
 /// `reasoning_content` on every replayed assistant message. The decision lives
@@ -367,76 +231,6 @@ pub fn model_thinking(
     Some(ChatThinking {
         r#type: ChatThinkingType::Enabled,
     })
-}
-
-fn model_entry(spec: &ProviderSpec, model: &ProviderModel) -> ModelEntry {
-    use std::num::NonZeroU64;
-
-    let all_reasoning_efforts: Vec<ReasoningEffort> = model.reasoning_efforts.clone();
-    let config = crate::agent::config::ModelEntryConfig {
-        id: Some(model.slug.clone()),
-        model_family: None,
-        model: model.model.clone(),
-        base_url: base_url(spec).to_string(),
-        api_base_url: None,
-        name: Some(model.name.clone()),
-        description: if model.description.is_empty() {
-            None
-        } else {
-            Some(model.description.clone())
-        },
-        context_window: NonZeroU64::new(model.context_window)
-            .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero")),
-        auto_compact_threshold_percent: None,
-        system_prompt_label: Some(model.name.clone()),
-        temperature: None,
-        top_p: None,
-        max_completion_tokens: model.max_output_tokens,
-        api_backend: model.api_backend.clone(),
-        auth_scheme: Some(model.auth_scheme),
-        agent_type: crate::agent::config::default_agent_type(),
-        inference_idle_timeout_secs: None,
-        max_retries: None,
-        rate_limit_retry_threshold: None,
-        subagent_rate_limit_max_attempts: None,
-        variants: Vec::new(),
-        api_key: None,
-        env_key: Some(EnvKeys::new(spec.env_keys.iter().copied())),
-        extra_headers: IndexMap::new(),
-        use_concise: false,
-        hidden: false,
-        supported_in_api: true,
-        reasoning_effort: model.default_reasoning,
-        supports_reasoning_effort: model.supports_reasoning_effort,
-        reasoning_efforts: reasoning_menu(&all_reasoning_efforts, model.default_reasoning),
-        supports_backend_search: false,
-        compactions_remaining: None,
-        compaction_at_tokens: None,
-        show_model_fingerprint: false,
-        stream_tool_calls: None,
-        max_inline_images: None,
-        laziness_detector: Default::default(),
-    };
-    let mut entry = ModelEntry::from_config_entry(&config);
-    entry.auth_provider = Some(AuthProviderRef::fail_closed(spec.scope_key()));
-    entry
-}
-
-fn reasoning_menu(values: &[ReasoningEffort], default: Option<ReasoningEffort>) -> Vec<ReasoningEffortOption> {
-    if values.is_empty() {
-        return Vec::new();
-    }
-    let default = default.unwrap_or(values[0]);
-    values
-        .iter()
-        .map(|value| ReasoningEffortOption {
-            id: value.to_string(),
-            value: *value,
-            label: format!("{value:?}"),
-            description: None,
-            default: *value == default,
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -481,60 +275,17 @@ mod tests {
         );
     }
 
-    #[serial_test::serial]
     #[test]
-    fn hydrate_skips_disconnected_providers() {
-        // The dev machine may legitimately export provider keys (env-based
-        // connect). Sanitize the environment so the assertion is hermetic.
-        const RELEVANT: &[&str] = &[
-            "UMANS_AI_CODING_PLAN_API_KEY",
-            "UMANS_AI_API_KEY",
-            "DEEPSEEK_API_KEY",
-            "OPENCODE_API_KEY",
-            "CMD_API_KEY",
-        ];
-        let saved: Vec<(String, Option<String>)> = RELEVANT
-            .iter()
-            .map(|key| ((*key).to_string(), std::env::var(key).ok()))
-            .collect();
-        for key in RELEVANT {
-            // SAFETY: env mutation is unsound under concurrency only if another
-            // thread reads the same variable concurrently; serial_test::serial
-            // runs the surrounding test alone and these vars are provider-only.
-            unsafe { std::env::remove_var(key) };
-        }
-
-        let mut resolved = IndexMap::new();
-        hydrate_connected_models(&mut resolved);
-        assert!(
-            resolved.keys().all(|k| !k.starts_with("umans-")
-                && !k.starts_with("deepseek-")
-                && !k.starts_with("opencode-")
-                && !k.starts_with("commandcode-")),
-            "tests without GROK_HOME / env must not inject provider models: {:?}",
-            resolved.keys().collect::<Vec<_>>()
-        );
-
-        for (key, value) in saved {
-            // SAFETY: see above; serial_test::serial keeps the provider env
-            // out of other threads' view while this test runs.
-            match value {
-                Some(value) => unsafe { std::env::set_var(key, value) },
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
-    }
-
-    #[test]
-    fn provider_models_commandcode_falls_back_without_cache() {
+    fn provider_models_commandcode_uses_checked_in_list() {
         let cmd = find_provider("commandcode").unwrap();
         let models = provider_models(cmd);
         assert!(!models.is_empty());
         assert!(models.iter().any(|m| m.model.contains("Kimi")));
     }
 
-    /// DeepSeek-family hydrated models get the `thinking` envelope; other
-    /// open-source models (e.g. GLM via OpenCode Zen) must not.
+    /// DeepSeek-family models get the `thinking` envelope; other open-source
+    /// models (e.g. GLM via OpenCode Zen) must not. Detection reads the
+    /// model's own metadata, so it holds for any entry the user configures.
     #[serial_test::serial]
     #[test]
     fn model_thinking_applies_only_to_deepseek_class() {
@@ -551,25 +302,37 @@ mod tests {
 
         unsafe { std::env::set_var("DEEPSEEK_API_KEY", "sk-test") };
         unsafe { std::env::set_var("OPENCODE_API_KEY", "sk-test") };
-        let mut resolved = IndexMap::new();
-        hydrate_connected_models(&mut resolved);
 
-        let deepseek = resolved.get("deepseek-v4-flash").expect("deepseek v4 flash");
+        let deepseek = reasoning_entry("deepseek-v4-flash", "deepseek", &["DEEPSEEK_API_KEY"]);
         assert_eq!(
-            model_thinking(deepseek),
+            model_thinking(&deepseek),
             Some(ChatThinking {
                 r#type: ChatThinkingType::Enabled
             })
         );
-        let glm = resolved.get("opencode-glm-5.2").expect("opencode glm");
-        assert_eq!(model_thinking(glm), None, "GLM is not DeepSeek-class");
+        let glm = reasoning_entry("glm-5.2", "opencode", &["OPENCODE_API_KEY"]);
+        assert_eq!(model_thinking(&glm), None, "GLM is not DeepSeek-class");
 
         for (key, value) in saved {
-            // SAFETY: see the sibling test; env is restored for other tests.
+            // SAFETY: see above; env is restored for other tests.
             match value {
                 Some(value) => unsafe { std::env::set_var(key, value) },
                 None => unsafe { std::env::remove_var(key) },
             }
+        }
+    }
+
+    /// A minimal `ModelEntry` carrying just what `model_thinking` inspects:
+    /// the wire model id, the chat-completions backend, a reasoning effort,
+    /// and the provider env key.
+    fn reasoning_entry(model: &str, provider: &str, env_keys: &[&str]) -> ModelEntry {
+        ModelEntry {
+            model: model.to_string(),
+            api_backend: ApiBackend::ChatCompletions,
+            reasoning_effort: Some(ReasoningEffort::High),
+            auth_provider: Some(AuthProviderRef::fail_closed(provider_scope(provider))),
+            env_key: Some(EnvKeys::new(env_keys.iter().copied())),
+            ..Default::default()
         }
     }
 }

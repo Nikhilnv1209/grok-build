@@ -3331,7 +3331,6 @@ pub(crate) fn resolve_model_list(
         }
         resolved = prefetched;
     }
-    crate::providers::hydrate_connected_models(&mut resolved);
     let mut explicit_api_backend_keys = std::collections::HashSet::new();
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);

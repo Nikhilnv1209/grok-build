@@ -3,12 +3,11 @@
 //! Umans / DeepSeek / OpenCode model lists come from the checked-in snapshot of
 //! https://models.dev/api.json (`data/models.dev.subset.json`), so context
 //! windows, reasoning flags, and temperature rules stay current without a
-//! second hand-written table. Command Code is not on models.dev; it exposes its
-//! own OpenAI-style `GET /provider/v1/models` catalog, with a small fallback
-//! snapshot for offline use.
+//! second hand-written table. The snapshot ships with the binary; nothing here
+//! is fetched at runtime. Command Code is not on models.dev, so it uses a
+//! checked-in open-weight list.
 
 use std::sync::OnceLock;
-use std::time::SystemTime;
 
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -20,7 +19,6 @@ use xai_grok_sampling_types::ReasoningEffort;
 use super::ProviderModel;
 
 const MODELS_DEV_SNAPSHOT: &str = include_str!("data/models.dev.subset.json");
-const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 // ── Provider specs ─────────────────────────────────────────────────────────
 
@@ -170,81 +168,14 @@ fn checked_in_snapshot() -> &'static ModelsDevSnapshot {
     })
 }
 
-/// Cache file holding the last fetched models.dev `api.json` body. Written by
-/// `super::refresh_provider_models`; absent until the first successful fetch.
-pub fn models_dev_live_cache_path() -> std::path::PathBuf {
-    xai_grok_config::grok_home().join("models-dev-live.json")
-}
-
-fn live_cache_fingerprint(path: &std::path::Path) -> Option<(SystemTime, u64)> {
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.modified().ok()?, meta.len()))
-}
-
-/// Memoized parse of the live cache, invalidated when the file changes on
-/// disk. Keyed by (mtime, len) so a refresh write is picked up immediately
-/// without re-parsing the multi-megabyte body on every model resolution.
-fn cached_live_snapshot(
-    path: &std::path::Path,
-    fingerprint: (SystemTime, u64),
-) -> Option<std::sync::Arc<ModelsDevSnapshot>> {
-    struct LiveParse {
-        fingerprint: (SystemTime, u64),
-        snapshot: std::sync::Arc<ModelsDevSnapshot>,
-    }
-    static LIVE: OnceLock<std::sync::Mutex<Option<LiveParse>>> = OnceLock::new();
-    let cell = LIVE.get_or_init(|| std::sync::Mutex::new(None));
-    let mut guard = cell.lock().ok()?;
-    if guard.as_ref().is_some_and(|e| e.fingerprint == fingerprint) {
-        return Some(guard.as_ref().expect("checked above").snapshot.clone());
-    }
-    let body = std::fs::read_to_string(path).ok()?;
-    let parsed = parse_snapshot(&body)?;
-    let arc = std::sync::Arc::new(parsed);
-    *guard = Some(LiveParse {
-        fingerprint,
-        snapshot: arc.clone(),
-    });
-    Some(arc)
-}
-
-/// The catalog actually in force: the fetched models.dev body when present
-/// and parseable, otherwise the checked-in snapshot. Refreshing the cache
-/// file therefore updates every consumer (picker, hydration, base URLs)
-/// without a restart.
+/// The catalog in force: the checked-in snapshot only. There is no live
+/// fetch -- provider model metadata is compiled in, so model resolution
+/// never touches the network.
 fn active_snapshot() -> std::sync::Arc<ModelsDevSnapshot> {
-    let path = models_dev_live_cache_path();
-    if let Some(fingerprint) = live_cache_fingerprint(&path)
-        && let Some(live) = cached_live_snapshot(&path, fingerprint)
-    {
-        return live;
-    }
     static FALLBACK: OnceLock<std::sync::Arc<ModelsDevSnapshot>> = OnceLock::new();
     FALLBACK
         .get_or_init(|| std::sync::Arc::new(checked_in_snapshot().clone()))
         .clone()
-}
-
-/// Fetch the live models.dev registry and persist it to the live-cache file.
-/// Shared by every snapshot-backed provider — one download refreshes Umans,
-/// DeepSeek, and OpenCode together.
-pub fn fetch_models_dev_blocking() -> anyhow::Result<String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()?;
-    let response = client.get(MODELS_DEV_URL).send()?;
-    if !response.status().is_success() {
-        anyhow::bail!("models.dev returned {}", response.status());
-    }
-    let body = response.text()?;
-    if parse_snapshot(&body).is_none() {
-        anyhow::bail!("models.dev returned an unparseable catalog");
-    }
-    if let Some(parent) = models_dev_live_cache_path().parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(models_dev_live_cache_path(), &body)?;
-    Ok(body)
 }
 
 /// Resolve a provider's base URL: the models.dev `api` field wins over the
@@ -368,9 +299,8 @@ fn effort_as_str(e: &ReasoningEffort) -> &'static str {
 
 // ── Command Code catalog ───────────────────────────────────────────────────
 
-/// Offline fallback for Command Code: the open-weight models it currently
-/// serves over the OpenAI-compatible route. Live refresh replaces this the
-/// moment a key is stored.
+/// The open-weight models Command Code serves over the OpenAI-compatible
+/// route. Checked in; nothing replaces it at runtime.
 const COMMAND_CODE_FALLBACK: &[(&str, &str, u64)] = &[
     ("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash", 1_000_000),
     ("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro", 1_000_000),
@@ -381,22 +311,6 @@ const COMMAND_CODE_FALLBACK: &[(&str, &str, u64)] = &[
     ("Qwen/Qwen3.8-Max", "Qwen 3.8 Max", 1_000_000),
     ("xai/grok-4.6", "Grok 4.6", 500_000),
 ];
-
-#[derive(Clone, Deserialize)]
-struct CommandCodeModelsResponse {
-    #[serde(rename = "data")]
-    data: Vec<CommandCodeModel>,
-}
-
-#[derive(Clone, Deserialize)]
-struct CommandCodeModel {
-    #[serde(rename = "id")]
-    id: String,
-    #[serde(rename = "name")]
-    name: Option<String>,
-    #[serde(rename = "context_length")]
-    context_length: Option<u64>,
-}
 
 fn commandcode_backend(model_id: &str) -> ApiBackend {
     // Claude models on Command Code 400 on the chat-completions route.
@@ -409,51 +323,8 @@ fn commandcode_backend(model_id: &str) -> ApiBackend {
     }
 }
 
-/// Safe catalog for Command Code. `Some(cache_json)` is a previously fetched
-/// `/provider/v1/models` body (from `~/.grok/models-dev-cache.json`); when
-/// absent or unparseable, falls back to the open-weight snapshot.
-pub fn commandcode_models(cache_json: Option<&str>) -> Vec<ProviderModel> {
-    if let Some(json) = cache_json {
-        match serde_json::from_str::<CommandCodeModelsResponse>(json) {
-            Ok(response) => {
-                let models = response
-                    .data
-                    .into_iter()
-                    .map(|m| {
-                        let backend = commandcode_backend(&m.id);
-                        let auth_scheme = if backend == ApiBackend::Messages {
-                            AuthScheme::Bearer
-                        } else {
-                            AuthScheme::Bearer
-                        };
-                        ProviderModel {
-                            slug: slug_for("commandcode", &m.id),
-                            model: m.id.clone(),
-                            name: m.name.unwrap_or_else(|| m.id.clone()),
-                            description: "Command Code model".to_string(),
-                            context_window: m.context_length.unwrap_or(200_000),
-                            max_output_tokens: None,
-                            supports_reasoning_effort: true,
-                            default_reasoning: Some(ReasoningEffort::High),
-                            reasoning_efforts: vec![
-                                ReasoningEffort::Low,
-                                ReasoningEffort::Medium,
-                                ReasoningEffort::High,
-                            ],
-                            api_backend: backend,
-                            auth_scheme,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                if !models.is_empty() {
-                    return models;
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "commandcode models cache unparseable; using fallback");
-            }
-        }
-    }
+/// Checked-in open-weight catalog for Command Code. Never fetched.
+pub fn commandcode_models() -> Vec<ProviderModel> {
     COMMAND_CODE_FALLBACK
         .iter()
         .map(|(id, name, ctx)| ProviderModel {
@@ -474,11 +345,6 @@ pub fn commandcode_models(cache_json: Option<&str>) -> Vec<ProviderModel> {
             auth_scheme: AuthScheme::Bearer,
         })
         .collect()
-}
-
-/// Cache path for a fetched Command Code `/provider/v1/models` response.
-pub fn commandcode_cache_path() -> std::path::PathBuf {
-    xai_grok_config::grok_home().join("models-dev-cache.json")
 }
 
 #[cfg(test)]
@@ -503,10 +369,10 @@ mod tests {
         assert!(snap.providers.contains_key("opencode"));
     }
 
-    /// The live-cache path must win over the checked-in snapshot whenever it
-    /// parses, so refreshed catalogs reach hydration without a restart.
+    /// Snapshot parsing drives every downstream metadata field (slugs, base
+    /// URLs, reasoning menus), so a new provider entry needs no code change.
     #[test]
-    fn live_cache_overrides_checked_in_snapshot() {
+    fn parsed_snapshot_drives_slugs_and_base_url() {
         let spec = builtin_providers()
             .iter()
             .find(|s| s.id == "deepseek")
@@ -521,7 +387,7 @@ mod tests {
         assert_eq!(
             base_url_in(&parsed, spec),
             "https://example.invalid/v1",
-            "live api field wins"
+            "the `api` field wins over the spec default"
         );
     }
 
@@ -584,28 +450,14 @@ mod tests {
     }
 
     #[test]
-    fn commandcode_fallback_is_open_weight_chat_models() {
-        let models = commandcode_models(None);
+    fn commandcode_catalog_is_open_weight_chat_models() {
+        let models = commandcode_models();
         assert!(!models.is_empty());
         assert!(
             models.iter().all(|m| m.api_backend == ApiBackend::ChatCompletions),
-            "fallback only carries OpenAI-compatible open models"
+            "checked-in catalog only carries OpenAI-compatible open models"
         );
         assert!(models.iter().any(|m| m.model.contains("Kimi")));
-    }
-
-    #[test]
-    fn commandcode_cache_parses_live_shape() {
-        let body = r#"{"object":"list","data":[
-            {"id":"deepseek/deepseek-v4-flash","name":"DeepSeek V4 Flash","context_length":1000000},
-            {"id":"claude-sonnet-5","name":"Claude Sonnet 5","context_length":1000000}
-        ]}"#;
-        let models = commandcode_models(Some(body));
-        assert_eq!(models.len(), 2);
-        assert_eq!(models[0].model, "deepseek/deepseek-v4-flash");
-        assert_eq!(models[0].slug, "commandcode-deepseek-deepseek-v4-flash");
-        assert_eq!(models[0].api_backend, ApiBackend::ChatCompletions);
-        assert_eq!(models[1].api_backend, ApiBackend::Messages);
     }
 
     #[test]

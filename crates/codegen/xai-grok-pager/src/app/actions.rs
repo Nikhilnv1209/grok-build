@@ -612,9 +612,6 @@ pub enum Action {
     ConnectProvider(String),
     /// User ran `/provider` — open the provider management dialog.
     OpenProviders,
-    /// User asked for a live catalog refresh from the provider dialog
-    /// (`None` = every connected provider).
-    RefreshProviderModels { provider: Option<String> },
     /// User submitted the API key for a provider connect overlay.
     SubmitConnectKey {
         provider: String,
@@ -2142,9 +2139,6 @@ pub enum Effect {
     /// becomes selectable immediately. The agent responds with a fresh
     /// `x.ai/models/update` notification; failure surfaces as a toast.
     ReloadAgentModels,
-    /// Refetch live provider catalogs (models.dev + Command Code) off the UI
-    /// thread, then report back via `TaskResult::ProviderCatalogsRefreshed`.
-    RefreshProviderCatalogs { provider: Option<String> },
     /// Spawn a debounce sleep task for shell suggestions. `agent_id` rides
     /// to the expiry so the fetch is built from the arming agent, not
     /// whatever view is active when the timer fires.
@@ -2804,14 +2798,6 @@ pub enum TaskResult {
     /// through the agent's `x.ai/models/update` notification, so this result
     /// carries no payload and only guards the success path.
     ModelsReloaded,
-    /// A provider live-catalog refresh finished. `requested` mirrors the
-    /// effect's scope (one provider id or all); `refreshed` lists the ids
-    /// that actually fetched new data, `failures` the human-readable errors.
-    ProviderCatalogsRefreshed {
-        requested: Option<String>,
-        refreshed: Vec<String>,
-        failures: Vec<String>,
-    },
     /// `/rename --auto` completed successfully.
     ResetSessionTitleComplete {
         agent_id: AgentId,

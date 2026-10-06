@@ -25,16 +25,10 @@ pub enum ProviderDialogOutcome {
     Connect(String),
     /// Drop the stored key for this provider id.
     Disconnect(String),
-    /// Refetch the live catalog for one provider id.
-    Refresh(String),
-    /// Refetch the live catalog for every connected provider.
-    RefreshAll,
 }
 
 pub struct ProvidersModal {
     selected: usize,
-    /// Provider ids with an in-flight catalog refresh (row shows a spinner).
-    pub refreshing: Vec<String>,
     pub window: modal_window::ModalWindowState,
 }
 
@@ -42,25 +36,12 @@ impl ProvidersModal {
     pub fn open() -> Self {
         Self {
             selected: 0,
-            refreshing: Vec::new(),
             window: modal_window::ModalWindowState::default(),
         }
     }
 
     fn providers(&self) -> &'static [ProviderSpec] {
         providers::builtin_providers()
-    }
-
-    /// Mark a refresh in-flight / finished so rows render accordingly.
-    pub fn set_refreshing(&mut self, provider_id: Option<&str>, active: bool) {
-        if let Some(id) = provider_id {
-            self.refreshing.retain(|p| p != id);
-            if active {
-                self.refreshing.push(id.to_string());
-            }
-        } else if !active {
-            self.refreshing.clear();
-        }
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent) -> ProviderDialogOutcome {
@@ -99,8 +80,6 @@ impl ProvidersModal {
                 }
             }
             KeyCode::Char('d') => ProviderDialogOutcome::Disconnect(id_of(self.selected)),
-            KeyCode::Char('r') => ProviderDialogOutcome::Refresh(id_of(self.selected)),
-            KeyCode::Char('R') => ProviderDialogOutcome::RefreshAll,
             _ => ProviderDialogOutcome::Changed,
         }
     }
@@ -120,37 +99,6 @@ impl ProvidersModal {
         format!("{state} · {models} models")
     }
 
-    /// Age of the provider's live catalog cache ("3m", "2h", built-in …).
-    fn cache_age_text(spec: &ProviderSpec) -> String {
-        let path = if spec.id == "commandcode" {
-            providers::commandcode_cache_path()
-        } else {
-            providers::models_dev_live_cache_path()
-        };
-        let Some(meta) = std::fs::metadata(path).ok().filter(|m| m.modified().is_ok()) else {
-            return if spec.models_dev_ids.is_empty() {
-                "built-in list".to_string()
-            } else {
-                "built-in snapshot".to_string()
-            };
-        };
-        let Ok(modified) = meta.modified() else {
-            return "cached".to_string();
-        };
-        let age = std::time::SystemTime::now()
-            .duration_since(modified)
-            .unwrap_or_default();
-        let mins = age.as_secs() / 60;
-        let label = if mins < 1 {
-            "just now".to_string()
-        } else if mins < 60 {
-            format!("{mins}m ago")
-        } else {
-            format!("{}h ago", mins / 60)
-        };
-        format!("refreshed {label}")
-    }
-
     /// Snapshot of the rows currently drawn (also used by tests).
     pub fn rows(&self) -> Vec<ProviderRowView> {
         self.providers()
@@ -160,9 +108,7 @@ impl ProvidersModal {
                 id: spec.id.to_string(),
                 env_hint: spec.env_keys.join(" or "),
                 status: Self::status_text(spec),
-                cache_age: Self::cache_age_text(spec),
                 connected: providers::is_connected(spec),
-                refreshing: self.refreshing.iter().any(|p| p == spec.id),
             })
             .collect()
     }
@@ -179,9 +125,7 @@ pub struct ProviderRowView {
     pub id: String,
     pub env_hint: String,
     pub status: String,
-    pub cache_age: String,
     pub connected: bool,
-    pub refreshing: bool,
 }
 
 pub fn render(
@@ -229,9 +173,7 @@ pub fn render(
         if y >= content.y + content.height - 1 {
             break;
         }
-        let marker = if row.refreshing {
-            "⟳"
-        } else if row.connected {
+        let marker = if row.connected {
             "●"
         } else {
             "○"
@@ -258,11 +200,7 @@ pub fn render(
             break;
         }
         let detail = truncate_to_width(
-            &format!(
-                "    env {env} · {age}",
-                env = row.env_hint,
-                age = row.cache_age
-            ),
+            &format!("    env {}", row.env_hint),
             width,
         );
         draw_line(buf, content.x, y, &detail, Style::default().fg(theme.text_secondary));
@@ -271,7 +209,7 @@ pub fn render(
 
     if y < content.y + content.height {
         let hints = truncate_to_width(
-            "↑/↓ select · c/↵ connect · d disconnect · r refresh · R refresh all · Esc close",
+            "↑/↓ select · c/↵ connect · d disconnect · Esc close",
             width,
         );
         draw_line(buf, content.x, content.y + content.height - 1, &hints, Style::default().fg(theme.text_secondary));
@@ -350,17 +288,6 @@ mod tests {
             modal.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE)),
             "c and Enter must agree"
         );
-        assert!(
-            matches!(
-                modal.handle_key(&key(KeyCode::Char('r'), KeyModifiers::NONE)),
-                ProviderDialogOutcome::Refresh(_)
-            ),
-            "r must request a refresh for the selection"
-        );
-        assert_eq!(
-            modal.handle_key(&key(KeyCode::Char('R'), KeyModifiers::NONE)),
-            ProviderDialogOutcome::RefreshAll
-        );
     }
 
     #[test]
@@ -395,15 +322,5 @@ mod tests {
             assert!(!row.env_hint.is_empty(), "{} must advertise env vars", row.id);
             assert!(row.status.contains("connected") || row.status.contains("not connected"));
         }
-    }
-
-    #[test]
-    fn set_refreshing_toggles_row_flag() {
-        let mut modal = ProvidersModal::open();
-        modal.set_refreshing(Some("deepseek"), true);
-        assert!(modal.rows().iter().any(|r| r.refreshing && r.id == "deepseek"));
-        modal.set_refreshing(Some("deepseek"), false);
-        assert!(modal.rows().iter().all(|r| !r.refreshing));
-        modal.set_refreshing(None, false);
     }
 }

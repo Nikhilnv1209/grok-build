@@ -33,7 +33,7 @@ use super::connect_provider::{
     dispatch_connect_provider, dispatch_disconnect_provider, dispatch_submit_connect_key,
 };
 use super::providers::{
-    dispatch_open_providers, dispatch_refresh_provider_models, reopen_providers_dialog,
+    dispatch_open_providers, reopen_providers_dialog,
 };
 use super::jump::{dispatch_jump_dismiss, dispatch_jump_picker_select, dispatch_jump_show_picker};
 use super::modes::{
@@ -1167,9 +1167,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::Logout => dispatch_logout(app),
         Action::ConnectProvider(provider) => dispatch_connect_provider(app, &provider),
         Action::OpenProviders => dispatch_open_providers(app),
-        Action::RefreshProviderModels { provider } => {
-            dispatch_refresh_provider_models(app, provider)
-        }
         Action::SubmitConnectKey { provider, key } => {
             let mut effects = dispatch_submit_connect_key(app, &provider, &key);
             // The key modal was opened from the provider dialog; return there

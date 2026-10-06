@@ -3368,16 +3368,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         ProviderDialogOutcome::Disconnect(provider) => {
                             return InputOutcome::Action(Action::DisconnectProvider(provider));
                         }
-                        ProviderDialogOutcome::Refresh(provider) => {
-                            return InputOutcome::Action(Action::RefreshProviderModels {
-                                provider: Some(provider),
-                            });
-                        }
-                        ProviderDialogOutcome::RefreshAll => {
-                            return InputOutcome::Action(Action::RefreshProviderModels {
-                                provider: None,
-                            });
-                        }
                         ProviderDialogOutcome::Changed => return InputOutcome::Changed,
                     }
                 }

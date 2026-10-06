@@ -3,9 +3,9 @@ use serial_test::serial;
 use xai_grok_test_support::EnvGuard;
 
 /// Unset the built-in provider env keys for catalog-shape tests. The dev
-/// machine may legitimately export these (env-based connect), which would
-/// let `hydrate_connected_models` inject provider rows into otherwise
-/// empty catalogs. Must be called from a `#[serial]` test.
+/// machine may legitimately export these (env-based connect), and a model
+/// that names one changes how it resolves credentials. Must be called from a
+/// `#[serial]` test.
 fn without_provider_env() -> Vec<EnvGuard> {
     const RELEVANT: &[&str] = &[
         "UMANS_AI_CODING_PLAN_API_KEY",
