@@ -114,6 +114,14 @@ pub struct SamplerConfig {
     /// Per-request header injector (e.g. OTel traceparent). Called in `post()`.
     #[serde(skip)]
     pub header_injector: Option<SharedHeaderInjector>,
+
+    /// Send `x-opencode-session` on every request, valued with the Grok
+    /// session id for this conversation. OpenCode's gateway rejects requests
+    /// without it (`MissingSessionID`) because the header is its prompt-cache
+    /// and sticky-provider routing key, so the value must stay stable per
+    /// conversation. Off unless the model opts in.
+    #[serde(default)]
+    pub opencode_session_header: bool,
 }
 
 impl Default for SamplerConfig {
@@ -155,6 +163,7 @@ impl Default for SamplerConfig {
             compaction_at_tokens: None,
             doom_loop_recovery: None,
             header_injector: None,
+            opencode_session_header: false,
         }
     }
 }

@@ -89,6 +89,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         rate_limit_retry_threshold: None,
         stream_tool_calls: false,
         max_inline_images: None,
+        opencode_session_header: false,
         idle_timeout_secs: Some(30),
         reasoning_effort: None,
         thinking: None,

@@ -61,6 +61,8 @@ struct GrokRequestHeaders<'a> {
     agent_id: &'a str,
     deployment_id: Option<&'a str>,
     user_id: Option<&'a str>,
+    /// Emit `x-opencode-session` mirroring `session_id` (OpenCode routing key).
+    opencode_session: bool,
 }
 
 impl GrokRequestHeaders<'_> {
@@ -71,6 +73,12 @@ impl GrokRequestHeaders<'_> {
             .header("x-grok-model-override", self.model_id)
             .header("x-grok-session-id", self.session_id)
             .header("x-grok-agent-id", self.agent_id);
+        // OpenCode routes and prompt-caches on this header, so mirror the
+        // Grok session id rather than a per-client constant: every
+        // conversation keeps its own cache entry.
+        if self.opencode_session && !self.session_id.is_empty() {
+            b = b.header("x-opencode-session", self.session_id);
+        }
         if let Some(idx) = self.turn_idx {
             b = b.header("x-grok-turn-idx", idx);
         }
@@ -314,6 +322,9 @@ pub struct SamplingClient {
     bearer_resolver: Option<crate::config::SharedBearerResolver>,
     /// Per-request header injection (OTel traceparent).
     header_injector: Option<crate::config::SharedHeaderInjector>,
+    /// When set, every request carries `x-opencode-session` valued with this
+    /// conversation's Grok session id (OpenCode's routing/cache key).
+    opencode_session_header: bool,
     /// Endpoint URL builder, resolved once from `base_url` and `query_params`.
     endpoint: EndpointTemplate,
     first_use_noted: Arc<AtomicBool>,
@@ -693,6 +704,7 @@ impl SamplingClient {
             attribution_callback: config.attribution_callback,
             bearer_resolver: config.bearer_resolver,
             header_injector: config.header_injector,
+            opencode_session_header: config.opencode_session_header,
             endpoint,
             first_use_noted: Arc::new(AtomicBool::new(false)),
         })
@@ -964,6 +976,7 @@ impl SamplingClient {
             agent_id: payload.x_grok_agent_id.as_deref().unwrap_or_default(),
             deployment_id: payload.x_grok_deployment_id.as_deref(),
             user_id: payload.x_grok_user_id.as_deref(),
+            opencode_session: self.opencode_session_header,
         };
         self.prepare_bearer().await;
         let SentRequest {
@@ -1058,6 +1071,7 @@ impl SamplingClient {
             agent_id: payload.x_grok_agent_id.as_deref().unwrap_or_default(),
             deployment_id: payload.x_grok_deployment_id.as_deref(),
             user_id: payload.x_grok_user_id.as_deref(),
+            opencode_session: self.opencode_session_header,
         };
         self.prepare_bearer().await;
         let SentRequest {
@@ -1267,6 +1281,7 @@ impl SamplingClient {
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
             deployment_id: request.x_grok_deployment_id.as_deref(),
             user_id: request.x_grok_user_id.as_deref(),
+            opencode_session: self.opencode_session_header,
         };
         let extra_tool_entries = std::mem::take(&mut request.extra_tool_entries);
         let mut request_body = serde_json::to_value(&request.inner).map_err(|e| {
@@ -1409,6 +1424,7 @@ impl SamplingClient {
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
             deployment_id: request.x_grok_deployment_id.as_deref(),
             user_id: request.x_grok_user_id.as_deref(),
+            opencode_session: self.opencode_session_header,
         };
         let extra_tool_entries = std::mem::take(&mut request.extra_tool_entries);
         let mut request_body = serde_json::to_value(&request.inner).map_err(|e| {
@@ -1638,6 +1654,7 @@ impl SamplingClient {
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
             deployment_id: request.x_grok_deployment_id.as_deref(),
             user_id: request.x_grok_user_id.as_deref(),
+            opencode_session: self.opencode_session_header,
         };
         self.prepare_bearer().await;
         let SentRequest {
@@ -1765,6 +1782,7 @@ impl SamplingClient {
             agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
             deployment_id: request.x_grok_deployment_id.as_deref(),
             user_id: request.x_grok_user_id.as_deref(),
+            opencode_session: self.opencode_session_header,
         };
         self.prepare_bearer().await;
         let SentRequest {
@@ -2314,6 +2332,7 @@ mod tests {
             rate_limit_retry_threshold: None,
             stream_tool_calls: false,
             max_inline_images: None,
+            opencode_session_header: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
             thinking: None,
@@ -2774,6 +2793,81 @@ mod tests {
         assert!(
             req.headers().contains_key("traceparent"),
             "HeaderInjector should inject traceparent into post() requests"
+        );
+    }
+
+    #[test]
+    fn opencode_session_header_mirrors_session_id_when_enabled() {
+        let headers = GrokRequestHeaders {
+            conv_id: "conv",
+            req_id: "req",
+            model_id: "gpt-5.6-terra",
+            session_id: "ses_abc123",
+            turn_idx: None,
+            transient_retry: None,
+            agent_id: "agent",
+            deployment_id: None,
+            user_id: None,
+            opencode_session: true,
+        };
+        let req = headers
+            .apply(reqwest::Client::new().post("http://localhost/test"))
+            .build()
+            .expect("build request");
+        assert_eq!(
+            req.headers()
+                .get("x-opencode-session")
+                .expect("x-opencode-session must be set"),
+            "ses_abc123",
+            "OpenCode routes on this header, so it must equal the Grok session id"
+        );
+    }
+
+    #[test]
+    fn opencode_session_header_absent_by_default() {
+        let headers = GrokRequestHeaders {
+            conv_id: "conv",
+            req_id: "req",
+            model_id: "gpt-5.6-terra",
+            session_id: "ses_abc123",
+            turn_idx: None,
+            transient_retry: None,
+            agent_id: "agent",
+            deployment_id: None,
+            user_id: None,
+            opencode_session: false,
+        };
+        let req = headers
+            .apply(reqwest::Client::new().post("http://localhost/test"))
+            .build()
+            .expect("build request");
+        assert!(
+            !req.headers().contains_key("x-opencode-session"),
+            "non-OpenCode models must not carry the header"
+        );
+    }
+
+    #[test]
+    fn opencode_session_header_skipped_when_session_id_empty() {
+        let headers = GrokRequestHeaders {
+            conv_id: "conv",
+            req_id: "req",
+            model_id: "gpt-5.6-terra",
+            session_id: "",
+            turn_idx: None,
+            transient_retry: None,
+            agent_id: "agent",
+            deployment_id: None,
+            user_id: None,
+            opencode_session: true,
+        };
+        let req = headers
+            .apply(reqwest::Client::new().post("http://localhost/test"))
+            .build()
+            .expect("build request");
+        assert!(
+            !req.headers().contains_key("x-opencode-session"),
+            "an empty session id would pin every conversation to one cache key"
         );
     }
 

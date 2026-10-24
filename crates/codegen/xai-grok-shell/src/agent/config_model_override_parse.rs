@@ -714,6 +714,7 @@ mod tests {
             show_model_fingerprint: Some(true),
             stream_tool_calls: Some(false),
             max_inline_images: Some(8),
+            provider: None,
         }
     }
 
@@ -727,6 +728,45 @@ mod tests {
         let ParsedModelOverrides { models, warnings } =
             parse_model_overrides(&toml::Value::Table(root));
         (models, warnings)
+    }
+
+    #[test]
+    fn provider_opencode_turns_on_the_session_header() {
+        // Regression: OpenCode's gateway answers `MissingSessionID` without a
+        // stable per-conversation `x-opencode-session`.
+        let mut entry = toml::map::Map::new();
+        entry.insert(
+            "provider".to_owned(),
+            toml::Value::String("opencode".to_owned()),
+        );
+        let (models, _) = parse_single_entry(entry);
+        let m = models.get("m").expect("model m parsed");
+        assert!(m.sends_opencode_session(), "provider=opencode must opt in");
+    }
+
+    #[test]
+    fn other_or_absent_provider_leaves_the_header_off() {
+        for provider in ["deepseek", "umans", "OpenCode", ""] {
+            let mut entry = toml::map::Map::new();
+            entry.insert(
+                "provider".to_owned(),
+                toml::Value::String(provider.to_owned()),
+            );
+            let (models, _) = parse_single_entry(entry);
+            let m = models.get("m").expect("model m parsed");
+            assert!(
+                !m.sends_opencode_session(),
+                "provider={provider:?} must not opt in"
+            );
+        }
+        // Absent key: no header, and no warning for the unknown-key case.
+        let (models, _) = parse_single_entry(toml::map::Map::new());
+        assert!(
+            !models
+                .get("m")
+                .expect("model m parsed")
+                .sends_opencode_session()
+        );
     }
 
     #[test]

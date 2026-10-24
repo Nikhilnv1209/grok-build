@@ -25,6 +25,12 @@ pub use catalog::{
 
 const PROVIDER_SCOPE_PREFIX: &str = "provider:";
 
+/// `provider = "opencode"` in a `[model.<id>]` entry. Selects the request
+/// headers OpenCode's gateway requires: a stable per-conversation
+/// `x-opencode-session`, which it uses for sticky-provider routing and
+/// prompt caching and without which it answers `MissingSessionID`.
+pub const OPENCODE_PROVIDER: &str = "opencode";
+
 /// One catalog row hydrated after the provider is connected.
 #[derive(Clone, Debug)]
 pub struct ProviderModel {

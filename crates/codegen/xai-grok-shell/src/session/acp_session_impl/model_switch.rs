@@ -74,6 +74,7 @@ impl SessionActor {
                 thinking: sampling_config.thinking,
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
                 max_inline_images: sampling_config.max_inline_images,
+                opencode_session_header: sampling_config.opencode_session_header,
             });
         let existing = self.chat_state_handle.get_credentials().await;
         let session_key = self

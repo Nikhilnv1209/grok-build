@@ -1106,6 +1106,12 @@ pub struct SamplingConfig {
     /// text before the request is built. `None` = no count cap (byte budget only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_inline_images: Option<u32>,
+    /// Send `x-opencode-session` on every request, valued with this conversation's
+    /// session id. OpenCode's gateway rejects requests without it (`MissingSessionID`)
+    /// and keys sticky routing plus prompt caching on it, so the value must be stable
+    /// per conversation. Set by `provider = "opencode"` on the model.
+    #[serde(default)]
+    pub opencode_session_header: bool,
 }
 
 // ============ Responses API wrapper ============

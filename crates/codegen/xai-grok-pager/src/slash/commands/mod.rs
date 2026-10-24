@@ -149,14 +149,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(login::LoginCommand),
         Arc::new(logout::LogoutCommand),
         Arc::new(provider::ProviderCommand),
-        Arc::new(import_claude::ImportClaudeCommand),
-        Arc::new(usage::UsageCommand),
-        Arc::new(queue::QueueCommand),
-        Arc::new(tasks::TasksCommand),
-        Arc::new(release_notes::ReleaseNotesCommand),
-        Arc::new(tutorial::TutorialCommand),
-        Arc::new(config_agents::ConfigAgentsCommand),
-        Arc::new(personas::PersonasCommand),
         // Hidden easter egg: never listed, runs on bare `/gboom`.
         Arc::new(gboom::GboomCommand),
         // Hidden diagnostic: never listed, toggles the scroll-debug HUD.

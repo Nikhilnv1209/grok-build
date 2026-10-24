@@ -3841,8 +3841,20 @@ pub struct ConfigModelOverride {
     pub stream_tool_calls: Option<bool>,
     /// Per-request cap on inline image parts in the resent conversation.
     pub max_inline_images: Option<u32>,
+    /// Inference vendor this model is served by, e.g. `"opencode"`. Selects that
+    /// vendor's required request headers; see [`Self::sends_opencode_session`].
+    pub provider: Option<String>,
 }
 impl ConfigModelOverride {
+    /// OpenCode's gateway keys sticky-provider routing and prompt caching on
+    /// `x-opencode-session` and rejects requests without it (`MissingSessionID`),
+    /// so a model pointed at OpenCode Zen/Go must send it. Opt-in by name,
+    /// matching how OpenCode's own client gates its header set on
+    /// `providerID.startsWith("opencode")`.
+    pub(crate) fn sends_opencode_session(&self) -> bool {
+        self.provider.as_deref() == Some(crate::providers::OPENCODE_PROVIDER)
+    }
+
     pub(crate) fn apply(
         &self,
         key: &str,
@@ -3950,6 +3962,9 @@ impl ConfigModelOverride {
         if self.max_inline_images.is_some() {
             entry.info.max_inline_images = self.max_inline_images;
         }
+        if self.sends_opencode_session() {
+            entry.info.opencode_session_header = Some(true);
+        }
         if self.api_key.is_some() {
             entry.api_key.clone_from(&self.api_key);
         }
@@ -4047,6 +4062,11 @@ pub struct ModelInfo {
     /// resent conversation. Oldest images beyond the cap become placeholder text. For
     /// providers that limit images per request (e.g. at most 8). `None` = no count cap.
     pub max_inline_images: Option<u32>,
+    /// When true, the sampler sends `x-opencode-session` on every request, valued with
+    /// this conversation's Grok session id. OpenCode's gateway rejects requests without
+    /// it (`MissingSessionID`) and keys prompt-cache/sticky routing on it, so the value
+    /// must stay stable per conversation. `None` = do not send (non-OpenCode models).
+    pub opencode_session_header: Option<bool>,
     /// Per-model Layer-3 LazinessDetector configuration. Defaults to the all-disabled state.
     /// The feature is per-model opt-in, with a second-step `max_nudges_per_session > 0` opt-in for actually injecting nudges.
     /// See [`LazinessDetectorPerModelConfig`].
@@ -4094,6 +4114,7 @@ impl ModelInfo {
             show_model_fingerprint: false,
             stream_tool_calls: None,
             max_inline_images: None,
+            opencode_session_header: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         }
     }
@@ -4135,6 +4156,7 @@ impl ModelInfo {
             show_model_fingerprint: entry.show_model_fingerprint,
             stream_tool_calls: entry.stream_tool_calls,
             max_inline_images: entry.max_inline_images,
+            opencode_session_header: None,
             laziness_detector: entry.laziness_detector.clone(),
         }
     }
@@ -4840,6 +4862,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 show_model_fingerprint: false,
                 stream_tool_calls: None,
                 max_inline_images: None,
+                opencode_session_header: None,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
             },
             mtls_cert_dir: None,
@@ -4997,6 +5020,7 @@ pub(crate) fn sampling_config_for_model(
         compaction_at_tokens: info.compaction_at_tokens,
         doom_loop_recovery: None,
         header_injector: None,
+        opencode_session_header: info.opencode_session_header.unwrap_or(false),
     }
 }
 /// Fold URL-derived headers into `extra_headers`. The sampler crate is intentionally URL-agnostic: it does not inspect `base_url` to decide which auth or staging headers to add.
@@ -5066,6 +5090,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             show_model_fingerprint: false,
             stream_tool_calls: None,
             max_inline_images: None,
+            opencode_session_header: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         },
         mtls_cert_dir: None,
