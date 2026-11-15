@@ -223,18 +223,10 @@ pub(super) fn dispatch_rewind_cancel_offer(app: &mut AppView) -> Vec<Effect> {
         stashed_draft: draft,
         selected_prompt_index: selected,
     });
-    let mut effects = vec![Effect::CancelTurn {
-        session_id: session_id.clone(),
-        cancel_subagents: true,
-        trigger: None,
-        // The rewind picker owns history via `handle_rewind`; this pre-cancel must not also pop the in-flight prompt
-        rewind_prompt_id: None,
-    }];
-    effects.push(Effect::FetchRewindPoints {
+    vec![Effect::CancelTurnThenFetchRewindPoints {
         agent_id: id,
         session_id,
-    });
-    effects
+    }]
 }
 
 pub(super) fn dispatch_rewind_select_mode(
@@ -565,7 +557,6 @@ pub(super) fn dispatch_rewind_success(
             stashed_draft: draft,
             selected_prompt_index: None,
         });
-        // The inline editor (if any) stays open; dismissing the error returns to editing
         return vec![];
     }
 
@@ -835,8 +826,6 @@ pub(super) fn handle_rewind_execute_failed(
     let Some(agent) = app.agents.get_mut(&agent_id) else {
         return vec![];
     };
-    // A pending inline resubmit dies with its rewind; the editor itself stays open so dismissing the error returns to editing
-    agent.pending_inline_resubmit = None;
     let anchor = agent
         .rewind_state
         .as_ref()

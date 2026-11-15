@@ -321,6 +321,13 @@ pub fn stream_chat_completions<'a>(
 mod tests {
     use super::*;
     use futures_util::stream;
+
+    fn nth<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected item {i}, got {} items", xs.len());
+        };
+        x
+    }
     use std::pin::pin;
     use xai_grok_sampling_types::{
         ChatChunkChoice, ChatChunkDelta, FinishReason, Role, ToolCallDelta as ChunkToolCallDelta,
@@ -363,7 +370,10 @@ mod tests {
 
     fn final_chunk(reason: FinishReason) -> ChatCompletionChunk {
         let mut chunk = make_chunk(vec![ChatChunkDelta::default()]);
-        chunk.choices[0].finish_reason = Some(reason);
+        let Some(choice) = chunk.choices.first_mut() else {
+            panic!("expected a choice");
+        };
+        choice.finish_reason = Some(reason);
         chunk
     }
 
@@ -388,8 +398,11 @@ mod tests {
         .await;
 
         assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
-        match &events[1] {
+        assert!(matches!(
+            nth(&events, 0),
+            SamplingEvent::StreamStarted { .. }
+        ));
+        match &nth(&events, 1) {
             SamplingEvent::Completed { response, .. } => {
                 assert!(response.is_empty());
             }
@@ -414,8 +427,11 @@ mod tests {
         .await;
 
         // Expected sequence: StreamStarted, FirstToken, two ChannelToken(Text), Completed
-        assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
-        assert!(matches!(events[1], SamplingEvent::FirstToken { .. }));
+        assert!(matches!(
+            nth(&events, 0),
+            SamplingEvent::StreamStarted { .. }
+        ));
+        assert!(matches!(nth(&events, 1), SamplingEvent::FirstToken { .. }));
 
         let text_tokens: Vec<&str> = events
             .iter()
@@ -450,7 +466,10 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
         }]);
-        reasoning_chunk.choices[0].finish_reason = None;
+        let Some(choice) = reasoning_chunk.choices.first_mut() else {
+            panic!("expected a choice");
+        };
+        choice.finish_reason = None;
 
         let chunks: Vec<Result<ChatCompletionChunk, SamplingError>> = vec![
             Ok(reasoning_chunk),
@@ -485,6 +504,9 @@ mod tests {
                         assert_eq!(text, "done");
                         saw_text = true;
                     }
+                    SamplingChannel::Narration => {
+                        panic!("chat completions never emits narration tokens")
+                    }
                 }
             }
         }
@@ -496,7 +518,10 @@ mod tests {
                     .reasoning_items()
                     .next()
                     .expect("reasoning sibling preserved");
-                let rs::SummaryPart::SummaryText(t) = &r.summary[0];
+                let Some(part) = r.summary.first() else {
+                    panic!("expected a summary part");
+                };
+                let rs::SummaryPart::SummaryText(t) = part;
                 assert_eq!(t.text, "thinking...");
             }
             other => panic!("expected Completed, got {other:?}"),
@@ -617,6 +642,7 @@ mod tests {
                     let label = match channel {
                         SamplingChannel::Reasoning => "R",
                         SamplingChannel::Text => "T",
+                        SamplingChannel::Narration => "N",
                     };
                     Some((label, text.as_str()))
                 }
@@ -698,21 +724,21 @@ mod tests {
             .collect();
 
         assert_eq!(deltas.len(), 2);
-        assert_eq!(deltas[0].0, 0);
-        assert_eq!(deltas[0].1.as_deref(), Some("call_abc"));
-        assert_eq!(deltas[0].2.as_deref(), Some("do_thing"));
-        assert_eq!(deltas[0].3.as_deref(), Some("{\"x\":"));
-        assert_eq!(deltas[1].1, None);
-        assert_eq!(deltas[1].2, None);
-        assert_eq!(deltas[1].3.as_deref(), Some("1}"));
+        assert_eq!(nth(&deltas, 0).0, 0);
+        assert_eq!(nth(&deltas, 0).1.as_deref(), Some("call_abc"));
+        assert_eq!(nth(&deltas, 0).2.as_deref(), Some("do_thing"));
+        assert_eq!(nth(&deltas, 0).3.as_deref(), Some("{\"x\":"));
+        assert_eq!(nth(&deltas, 1).1, None);
+        assert_eq!(nth(&deltas, 1).2, None);
+        assert_eq!(nth(&deltas, 1).3.as_deref(), Some("1}"));
 
         match events.last().unwrap() {
             SamplingEvent::Completed { response, .. } => {
                 let calls = response.tool_calls();
                 assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].id.as_ref(), "call_abc");
-                assert_eq!(calls[0].name, "do_thing");
-                assert_eq!(calls[0].arguments.as_ref(), "{\"x\":1}");
+                assert_eq!(nth(calls, 0).id.as_ref(), "call_abc");
+                assert_eq!(nth(calls, 0).name, "do_thing");
+                assert_eq!(nth(calls, 0).arguments.as_ref(), "{\"x\":1}");
                 assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
             }
             other => panic!("expected Completed, got {other:?}"),
@@ -785,8 +811,11 @@ mod tests {
         ))
         .await;
 
-        assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
-        match &events[1] {
+        assert!(matches!(
+            nth(&events, 0),
+            SamplingEvent::StreamStarted { .. }
+        ));
+        match &nth(&events, 1) {
             SamplingEvent::ModelMetadata { metadata: m, .. } => {
                 assert_eq!(m.context_window, Some(8192));
                 assert_eq!(m.max_completion_tokens, Some(4096));

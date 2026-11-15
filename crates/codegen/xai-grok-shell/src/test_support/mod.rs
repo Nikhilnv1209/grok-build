@@ -27,17 +27,12 @@ fn redirect_unified_log_for_tests() {
 /// Pre-main hermetic bootstrap, run before any test (and before the harness
 /// spawns worker threads):
 ///
-/// 1. jsonwebtoken 10 refuses to guess a CryptoProvider when more than one
-///    backend feature is enabled in the unified dep graph — product paths
-///    install it lazily, but whichever test runs first would otherwise panic
-///    depending on alphabetical order. Install deterministically here.
-/// 2. Unset the built-in provider API-key env vars. The dev machine may
-///    legitimately export them (env-based connect), which leaks hydrated
-///    provider rows / BYOK credentials into tests that assert "no external
-///    credentials". Tests that need them set explicit values via `EnvGuard`.
+/// Unset the built-in provider API-key env vars. The dev machine may
+/// legitimately export them (env-based connect), which leaks hydrated
+/// provider rows / BYOK credentials into tests that assert "no external
+/// credentials". Tests that need them set explicit values via `EnvGuard`.
 #[ctor::ctor]
 fn hermetic_test_bootstrap() {
-    let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();
     for key in [
         "UMANS_AI_CODING_PLAN_API_KEY",
         "UMANS_AI_API_KEY",
