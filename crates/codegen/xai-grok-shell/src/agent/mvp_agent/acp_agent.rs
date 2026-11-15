@@ -1454,6 +1454,8 @@ impl acp::Agent for MvpAgent {
                 total_tokens: 0,
                 model_id: &model,
                 last_turn_usage: None,
+                turn_input_tokens: None,
+                turn_cached_read_tokens: None,
                 prompt_usage: None,
                 cancellation_category: None,
                 cancellation_context: None,
@@ -1573,6 +1575,12 @@ impl acp::Agent for MvpAgent {
                     usage: prompt_usage,
                     tool_overrides: _,
                 } = turn_ok;
+                // Snapshot is consumed by trace upload below; capture the turn-level
+                // cache totals now for the response `_meta`.
+                let turn_input_tokens = turn_snapshot.as_ref().map(|s| s.turn_input_tokens);
+                let turn_cached_read_tokens = turn_snapshot
+                    .as_ref()
+                    .map(|s| s.turn_cached_input_tokens);
                 let subagent_refs = self
                     .spawned_subagent_refs_for_prompt(
                         arguments.session_id.0.as_ref(),
@@ -1706,6 +1714,8 @@ impl acp::Agent for MvpAgent {
                                     total_tokens,
                                     model_id: &model,
                                     last_turn_usage: last_turn_usage.as_ref(),
+                                    turn_input_tokens,
+                                    turn_cached_read_tokens,
                                     prompt_usage,
                                     cancellation_category,
                                     cancellation_context,

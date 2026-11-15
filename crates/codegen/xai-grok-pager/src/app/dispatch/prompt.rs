@@ -1156,6 +1156,25 @@ pub(super) fn supersede_open_reload_window(
 
 // TaskResult handlers.
 
+/// Accurate per-turn cache stats from the shell's `PromptResponse._meta`.
+///
+/// `turnInputTokens` / `turnCachedReadTokens` are summed over every model call in the turn;
+/// the last-call `inputTokens` / `cachedReadTokens` sibling fields are deliberately not used here.
+fn turn_cache_stats(
+    result: &Result<acp::PromptResponse, String>,
+) -> Option<crate::views::context_bar::TurnCacheStats> {
+    let meta = result.as_ref().ok()?.meta.as_ref()?;
+    let prompt_tokens = meta.get("turnInputTokens")?.as_u64()?;
+    let cached_read_tokens = meta
+        .get("turnCachedReadTokens")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    (prompt_tokens > 0).then_some(crate::views::context_bar::TurnCacheStats {
+        prompt_tokens,
+        cached_read_tokens,
+    })
+}
+
 pub(super) fn handle_prompt_response(
     app: &mut AppView,
     agent_id: AgentId,
@@ -1231,6 +1250,9 @@ pub(super) fn handle_prompt_response(
                 }
                 return vec![];
             }
+        }
+        if let Some(stats) = turn_cache_stats(&result) {
+            agent.last_turn_cache = Some(stats);
         }
         let was_cancelling = agent.session.state.is_cancelling()
             || matches!(

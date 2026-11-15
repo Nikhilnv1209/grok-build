@@ -160,6 +160,25 @@ pub fn context_bar_line(
     context_bar_line_for_session(used_tokens, total_tokens, hovered, theme, false)
 }
 
+/// Prompt-token cache totals for the most recently completed turn.
+///
+/// Both figures are summed across every model call in the turn, so the percentage is a
+/// weighted cache-hit rate rather than the last call's ratio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnCacheStats {
+    pub prompt_tokens: u64,
+    pub cached_read_tokens: u64,
+}
+
+impl TurnCacheStats {
+    /// Share of the turn's prompt tokens served from cache, rounded to a whole percent.
+    pub fn hit_percentage(&self) -> Option<u8> {
+        (self.prompt_tokens > 0).then(|| {
+            xai_token_estimation::usage_percentage_u8(self.cached_read_tokens, self.prompt_tokens)
+        })
+    }
+}
+
 /// Like [`context_bar_line`], but omits the bar for gateway/chat-kind sessions.
 pub fn context_bar_line_for_session(
     used_tokens: Option<u64>,
@@ -168,12 +187,34 @@ pub fn context_bar_line_for_session(
     theme: &Theme,
     gateway_chat: bool,
 ) -> Option<Line<'static>> {
+    context_bar_line_for_session_with_cache(
+        used_tokens,
+        total_tokens,
+        hovered,
+        theme,
+        gateway_chat,
+        None,
+    )
+}
+
+/// [`context_bar_line_for_session`] with the last turn's cache totals appended as
+/// `cache 4.2K (34%)`. The suffix is omitted when the turn reported no prompt tokens
+/// or no cache statistics were available.
+pub fn context_bar_line_for_session_with_cache(
+    used_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    hovered: bool,
+    theme: &Theme,
+    gateway_chat: bool,
+    cache: Option<TurnCacheStats>,
+) -> Option<Line<'static>> {
     if gateway_chat {
         return None;
     }
     let used = used_tokens?;
     let total = total_tokens.filter(|&t| t > 0)?;
     let pct = xai_token_estimation::usage_percentage(used, total);
+    let cache_suffix = cache_suffix(cache, theme);
 
     // Default form drives the line width: `used / total`, right-padded to the minimum hover width so both states render at the same width
     let mut token_str = format!("{} / {}", fmt_tokens(used), fmt_tokens(total));
@@ -199,13 +240,35 @@ pub fn context_bar_line_for_session(
             fmt_pct5(pct),
             Style::default().fg(theme.text_secondary).bg(theme.bg_base),
         ));
+        spans.extend(cache_suffix);
         Some(Line::from(spans))
     } else {
-        Some(Line::from(Span::styled(
+        let mut spans = vec![Span::styled(
             token_str,
             Style::default().fg(color).bg(theme.bg_base),
-        )))
+        )];
+        spans.extend(cache_suffix);
+        Some(Line::from(spans))
     }
+}
+
+fn cache_suffix(cache: Option<TurnCacheStats>, theme: &Theme) -> Vec<Span<'static>> {
+    let Some(cache) = cache else {
+        return Vec::new();
+    };
+    let Some(pct) = cache.hit_percentage() else {
+        return Vec::new();
+    };
+    vec![
+        Span::styled(
+            " · cache ",
+            Style::default().fg(theme.gray_dim).bg(theme.bg_base),
+        ),
+        Span::styled(
+            format!("{} ({pct}%)", fmt_tokens(cache.cached_read_tokens)),
+            Style::default().fg(theme.text_secondary).bg(theme.bg_base),
+        ),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +463,123 @@ mod tests {
             assert!(context_bar_line(Some(1_000), None, hovered, &theme).is_none());
             // Zero total is treated as missing.
             assert!(context_bar_line(Some(1_000), Some(0), hovered, &theme).is_none());
+        }
+    }
+
+    #[test]
+    fn cache_stats_percentage_uses_turn_prompt_tokens() {
+        let stats = TurnCacheStats {
+            prompt_tokens: 10_000,
+            cached_read_tokens: 4_200,
+        };
+        assert_eq!(stats.hit_percentage(), Some(42));
+
+        // Rounds half up like the context meter.
+        assert_eq!(
+            TurnCacheStats {
+                prompt_tokens: 8,
+                cached_read_tokens: 7,
+            }
+            .hit_percentage(),
+            Some(88)
+        );
+        // No prompt tokens means no meaningful percentage.
+        assert_eq!(
+            TurnCacheStats {
+                prompt_tokens: 0,
+                cached_read_tokens: 0,
+            }
+            .hit_percentage(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_context_bar_appends_cache_hit_rate() {
+        let theme = Theme::default();
+        let cache = Some(TurnCacheStats {
+            prompt_tokens: 10_000,
+            cached_read_tokens: 4_200,
+        });
+        for hovered in [false, true] {
+            let line = context_bar_line_for_session_with_cache(
+                Some(8_500),
+                Some(1_000_000),
+                hovered,
+                &theme,
+                false,
+                cache,
+            )
+            .expect("token data provided");
+            assert!(
+                line_text(&line).ends_with(" · cache 4.2K (42%)"),
+                "expected cache suffix, got {:?}",
+                line_text(&line)
+            );
+        }
+    }
+
+    #[test]
+    fn test_context_bar_cache_suffix_keeps_hover_width_stable() {
+        let theme = Theme::default();
+        let cache = Some(TurnCacheStats {
+            prompt_tokens: 120_000,
+            cached_read_tokens: 90_000,
+        });
+        let default_line = context_bar_line_for_session_with_cache(
+            Some(8_500),
+            Some(1_000_000),
+            false,
+            &theme,
+            false,
+            cache,
+        )
+        .expect("token data provided");
+        let hover_line = context_bar_line_for_session_with_cache(
+            Some(8_500),
+            Some(1_000_000),
+            true,
+            &theme,
+            false,
+            cache,
+        )
+        .expect("token data provided");
+        assert_eq!(default_line.width(), hover_line.width());
+    }
+
+    #[test]
+    fn test_context_bar_shows_zero_cache_rate() {
+        // A reported turn with no cache hits is a real 0%, not missing data.
+        let theme = Theme::default();
+        let line = context_bar_line_for_session_with_cache(
+            Some(8_500),
+            Some(1_000_000),
+            false,
+            &theme,
+            false,
+            Some(TurnCacheStats {
+                prompt_tokens: 10_000,
+                cached_read_tokens: 0,
+            }),
+        )
+        .expect("token data provided");
+        assert!(line_text(&line).ends_with(" · cache 0 (0%)"));
+    }
+
+    #[test]
+    fn test_context_bar_omits_cache_suffix_without_stats() {
+        let theme = Theme::default();
+        for hovered in [false, true] {
+            let line = context_bar_line_for_session_with_cache(
+                Some(8_500),
+                Some(1_000_000),
+                hovered,
+                &theme,
+                false,
+                None,
+            )
+            .expect("token data provided");
+            assert!(!line_text(&line).contains("cache"));
         }
     }
 

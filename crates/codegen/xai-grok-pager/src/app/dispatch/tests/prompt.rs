@@ -2420,6 +2420,62 @@ fn prompt_response_disarms_pending_reconcile() {
 }
 
 #[test]
+fn prompt_response_meta_records_turn_cache_stats() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.state = AgentState::TurnRunning;
+        agent.session.current_prompt_id = Some("pid-cache".into());
+    }
+    let mut meta = serde_json::Map::new();
+    meta.insert("promptId".into(), "pid-cache".into());
+    meta.insert("turnInputTokens".into(), 12_000u64.into());
+    meta.insert("turnCachedReadTokens".into(), 9_000u64.into());
+
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::PromptResponse {
+            agent_id: id,
+            result: Ok(acp::PromptResponse::new(acp::StopReason::EndTurn).meta(Some(meta))),
+            http_status: None,
+            prompt_id: Some("pid-cache".into()),
+        }),
+        &mut app,
+    );
+
+    assert_eq!(
+        app.agents[&id].last_turn_cache,
+        Some(crate::views::context_bar::TurnCacheStats {
+            prompt_tokens: 12_000,
+            cached_read_tokens: 9_000,
+        })
+    );
+}
+
+#[test]
+fn prompt_response_ignores_last_call_usage_for_cache_stats() {
+    // `inputTokens`/`cachedReadTokens` are the last call only; without the turn-level
+    // keys the pager must not show a misleading cache percentage.
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let mut meta = serde_json::Map::new();
+    meta.insert("inputTokens".into(), 1_000u64.into());
+    meta.insert("cachedReadTokens".into(), 900u64.into());
+
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::PromptResponse {
+            agent_id: id,
+            result: Ok(acp::PromptResponse::new(acp::StopReason::EndTurn).meta(Some(meta))),
+            http_status: None,
+            prompt_id: None,
+        }),
+        &mut app,
+    );
+
+    assert_eq!(app.agents[&id].last_turn_cache, None);
+}
+
+#[test]
 fn prompt_response_resets_cancelling_to_idle() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);

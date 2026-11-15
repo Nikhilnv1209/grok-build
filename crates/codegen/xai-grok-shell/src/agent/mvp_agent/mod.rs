@@ -431,6 +431,14 @@ pub(crate) struct PromptResponseMeta {
     pub cached_read_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u32>,
+    /// Prompt tokens summed over every model call in this turn.
+    /// Unlike `input_tokens` (last call only), this is the accurate denominator for a
+    /// turn-level cache-hit percentage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_input_tokens: Option<u64>,
+    /// Cached prompt tokens summed over every model call in this turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_cached_read_tokens: Option<u64>,
     /// Whole-prompt billing (sibling token fields are last call only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::extensions::notification::PromptUsage>,
@@ -468,6 +476,9 @@ pub(crate) struct PromptResponseMetaArgs<'a> {
     pub total_tokens: u64,
     pub model_id: &'a str,
     pub last_turn_usage: Option<&'a xai_grok_sampling_types::TokenUsage>,
+    /// Turn-level cache totals, distinct from `last_turn_usage` (last call only).
+    pub turn_input_tokens: Option<u64>,
+    pub turn_cached_read_tokens: Option<u64>,
     pub prompt_usage: Option<crate::extensions::notification::PromptUsage>,
     pub cancellation_category: Option<String>,
     pub cancellation_context: Option<serde_json::Value>,
@@ -486,6 +497,8 @@ pub(crate) fn build_prompt_response_meta(
         total_tokens,
         model_id,
         last_turn_usage,
+        turn_input_tokens,
+        turn_cached_read_tokens,
         prompt_usage,
         cancellation_category,
         cancellation_context,
@@ -509,6 +522,8 @@ pub(crate) fn build_prompt_response_meta(
         output_tokens: last_turn_usage.map(|u| u.completion_tokens),
         cached_read_tokens: last_turn_usage.map(|u| u.cached_prompt_tokens),
         reasoning_tokens: last_turn_usage.map(|u| u.reasoning_tokens),
+        turn_input_tokens,
+        turn_cached_read_tokens,
         usage: prompt_usage,
         cancellation_category,
         cancellation_context,

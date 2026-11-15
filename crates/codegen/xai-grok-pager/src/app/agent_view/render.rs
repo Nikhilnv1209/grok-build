@@ -1559,12 +1559,13 @@ impl AgentView {
             .as_ref()
             .and_then(|c| (c.total > 0).then_some(c.total))
             .or(model_window);
-        if let Some(ctx_line) = context_bar::context_bar_line_for_session(
+        if let Some(ctx_line) = context_bar::context_bar_line_for_session_with_cache(
             ctx_used,
             ctx_total,
             self.hit_context.hovered,
             &theme,
             self.chat_kind,
+            self.last_turn_cache,
         ) {
             status.push("context", ctx_line);
         }

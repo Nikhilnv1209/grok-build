@@ -884,6 +884,8 @@ pub struct AgentView {
     pub(crate) modal_hovered_key: Option<char>,
     /// Cached server-reported context state.
     pub context_state: Option<xai_grok_shell::session::ContextInfo>,
+    /// Prompt-cache totals for the most recently completed turn. Rendered in the top context bar.
+    pub last_turn_cache: Option<crate::views::context_bar::TurnCacheStats>,
     pub status_context: Option<xai_grok_status_line::StatusLineContext>,
     /// Held across a frame that clamps the row away, so a script keeps the size
     /// it last painted at.

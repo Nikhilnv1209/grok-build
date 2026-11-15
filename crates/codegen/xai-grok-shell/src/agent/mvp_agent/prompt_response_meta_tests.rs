@@ -15,6 +15,8 @@ fn args<'a>(
         total_tokens,
         model_id,
         last_turn_usage: None,
+        turn_input_tokens: None,
+        turn_cached_read_tokens: None,
         prompt_usage: None,
         cancellation_category: None,
         cancellation_context: None,
@@ -79,6 +81,46 @@ fn preserves_zero_token_values() {
     });
     assert_eq!(meta["cachedReadTokens"], 0);
     assert_eq!(meta["reasoningTokens"], 0);
+}
+
+#[test]
+fn turn_cache_totals_land_as_camelcase_meta_keys() {
+    // Turn-level sums are distinct from the last-call `inputTokens`/`cachedReadTokens`
+    // siblings, so a cache-hit percentage must be computed from these keys.
+    let meta = build_prompt_response_meta(PromptResponseMetaArgs {
+        turn_input_tokens: Some(12_000),
+        turn_cached_read_tokens: Some(9_000),
+        ..args("s", "p", 0, "m")
+    });
+    assert_eq!(meta["turnInputTokens"], 12_000);
+    assert_eq!(meta["turnCachedReadTokens"], 9_000);
+
+    // Absent when the turn reported no snapshot.
+    let none = build_prompt_response_meta(args("s", "p", 0, "m"));
+    assert!(none.get("turnInputTokens").is_none());
+    assert!(none.get("turnCachedReadTokens").is_none());
+}
+
+#[test]
+fn turn_cache_totals_are_not_confused_with_last_call_usage() {
+    let usage = TokenUsage {
+        prompt_tokens: 1_500,
+        completion_tokens: 200,
+        total_tokens: 1_700,
+        reasoning_tokens: 0,
+        cached_prompt_tokens: 1_000,
+        cache_creation_prompt_tokens: 0,
+    };
+    let meta = build_prompt_response_meta(PromptResponseMetaArgs {
+        last_turn_usage: Some(&usage),
+        turn_input_tokens: Some(30_000),
+        turn_cached_read_tokens: Some(24_000),
+        ..args("s", "p", 1_700, "m")
+    });
+    assert_eq!(meta["inputTokens"], 1_500);
+    assert_eq!(meta["cachedReadTokens"], 1_000);
+    assert_eq!(meta["turnInputTokens"], 30_000);
+    assert_eq!(meta["turnCachedReadTokens"], 24_000);
 }
 
 #[test]

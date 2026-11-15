@@ -163,6 +163,7 @@ impl AgentView {
             modal_buttons: Vec::new(),
             modal_hovered_key: None,
             context_state: None,
+            last_turn_cache: None,
             status_context: None,
             last_status_line_size: None,
             chat_kind: false,
@@ -1161,6 +1162,7 @@ impl AgentView {
     pub fn apply_full_context_info(&mut self, next: xai_grok_shell::session::ContextInfo) {
         if self.chat_kind {
             self.context_state = None;
+            self.last_turn_cache = None;
             return;
         }
         self.context_state = Some(next);
@@ -1171,6 +1173,7 @@ impl AgentView {
     pub fn apply_context_used(&mut self, used: u64, total: u64) {
         if self.chat_kind {
             self.context_state = None;
+            self.last_turn_cache = None;
             return;
         }
         let total = if total > 0 {
