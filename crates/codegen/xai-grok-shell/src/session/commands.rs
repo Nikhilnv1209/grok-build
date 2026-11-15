@@ -173,6 +173,28 @@ pub struct PromptTurnOk {
     pub structured_output: Option<Result<serde_json::Value, String>>,
     pub usage: Option<crate::extensions::notification::PromptUsage>,
     pub tool_overrides: Option<xai_grok_sampling_types::ToolOverrides>,
+    /// Prompt tokens summed over every model call in the turn.
+    /// Present on every terminal path, including cancels (unlike `turn_snapshot`,
+    /// which is only taken for completed turns), so clients can report a
+    /// turn-level cache-hit rate even for an interrupted turn.
+    pub turn_input_tokens: u64,
+    /// Cached prompt tokens summed over every model call in the turn.
+    pub turn_cached_read_tokens: u64,
+}
+impl Default for PromptTurnOk {
+    fn default() -> Self {
+        Self {
+            stop_reason: acp::StopReason::EndTurn,
+            total_tokens: 0,
+            turn_snapshot: None,
+            completion_kind: PromptCompletionKind::Completed,
+            structured_output: None,
+            usage: None,
+            tool_overrides: None,
+            turn_input_tokens: 0,
+            turn_cached_read_tokens: 0,
+        }
+    }
 }
 pub(crate) type PromptTurnResult = Result<PromptTurnOk, acp::Error>;
 pub(crate) fn ok_end_turn(tokens: u64, snapshot: Option<TurnDeltaSnapshot>) -> PromptTurnResult {
@@ -184,6 +206,8 @@ pub(crate) fn ok_end_turn(tokens: u64, snapshot: Option<TurnDeltaSnapshot>) -> P
         structured_output: None,
         usage: None,
         tool_overrides: None,
+        turn_input_tokens: 0,
+        turn_cached_read_tokens: 0,
     })
 }
 /// Bound on awaiting [`ParsedPromptInfo`] for the metadata upload, shared by the main-session and subagent paths so the two bounds can't drift.

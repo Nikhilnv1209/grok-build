@@ -1615,13 +1615,13 @@ impl acp::Agent for MvpAgent {
                     structured_output,
                     usage: prompt_usage,
                     tool_overrides: _,
+                    turn_input_tokens,
+                    turn_cached_read_tokens,
                 } = turn_ok;
-                // Snapshot is consumed by trace upload below; capture the turn-level
-                // cache totals now for the response `_meta`.
-                let turn_input_tokens = turn_snapshot.as_ref().map(|s| s.turn_input_tokens);
-                let turn_cached_read_tokens = turn_snapshot
-                    .as_ref()
-                    .map(|s| s.turn_cached_input_tokens);
+                // Turn totals are reported on every terminal path (cancels included),
+                // unlike `turn_snapshot`, which is only taken for completed turns.
+                let turn_input_tokens = Some(turn_input_tokens);
+                let turn_cached_read_tokens = Some(turn_cached_read_tokens);
                 let subagent_refs = self
                     .spawned_subagent_refs_for_prompt(
                         arguments.session_id.0.as_ref(),

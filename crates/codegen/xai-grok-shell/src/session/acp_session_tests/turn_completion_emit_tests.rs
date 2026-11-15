@@ -315,6 +315,7 @@ async fn normal_completion_persists_turn_completed_after_buffered_delta_flush() 
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     Some(0),
                 )
@@ -400,6 +401,7 @@ async fn same_prompt_and_epoch_wrong_allocation_does_not_settle_successor() {
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     Some(0),
                 )
@@ -624,6 +626,7 @@ async fn completion_without_elapsed_persists_none() {
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     None,
                 )
@@ -927,6 +930,7 @@ async fn hook_denied_cancel_stamps_cancellation_category_on_turn_end() {
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     Some(0),
                 )
@@ -1019,6 +1023,7 @@ async fn removed_from_queue_completion_emits_no_turn_completed() {
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     Some(0),
                 )
@@ -1064,6 +1069,7 @@ async fn unknown_prompt_completion_emits_no_turn_completed() {
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     Some(0),
                 )

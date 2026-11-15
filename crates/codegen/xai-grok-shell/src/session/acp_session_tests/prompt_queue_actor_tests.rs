@@ -2857,6 +2857,7 @@ async fn stale_completion_does_not_clear_promoted_turns_running_task() {
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     Some(0),
                 )

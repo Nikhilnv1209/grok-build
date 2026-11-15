@@ -60,6 +60,10 @@ pub struct NotificationMeta {
     pub stream_start_ms: Option<i64>,
     /// Timestamp when the current turn started (epoch ms).
     pub turn_start_ms: Option<i64>,
+    /// Prompt tokens summed over this turn's model calls so far.
+    pub turn_input_tokens: u64,
+    /// Cached prompt tokens summed over this turn's model calls so far.
+    pub turn_cached_read_tokens: u64,
 }
 
 /// Configuration for tool-result pruning.

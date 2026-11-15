@@ -198,6 +198,16 @@ fn handle_inner(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         if let Some(tokens) = meta.total_tokens {
                             confirm_context_used(agent, tokens);
                         }
+                        // Live cache-hit rate: the shell stamps the turn's running
+                        // sums on every notification, so the context bar updates
+                        // after each model call instead of only at turn end.
+                        if let Some(input) = meta.turn_input_tokens.filter(|t| *t > 0) {
+                            agent.last_turn_cache =
+                                Some(crate::views::context_bar::TurnCacheStats {
+                                    prompt_tokens: input,
+                                    cached_read_tokens: meta.turn_cached_read_tokens.unwrap_or(0),
+                                });
+                        }
                         if let Some(ts) = meta.turn_start_ms {
                             agent.turn_start_ms = Some(ts);
                             agent.turn_start_ms_prompt = meta.prompt_id.clone();

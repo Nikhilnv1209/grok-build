@@ -745,6 +745,7 @@ impl SessionActor {
             structured_output: None,
             usage: None,
             tool_overrides: None,
+            ..Default::default()
         }));
     }
 

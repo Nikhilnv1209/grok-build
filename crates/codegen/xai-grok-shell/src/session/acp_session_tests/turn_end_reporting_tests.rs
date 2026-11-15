@@ -1025,6 +1025,7 @@ async fn a_completion_arriving_after_its_cancel_reports_nothing() {
                     structured_output: None,
                     usage: None,
                     tool_overrides: None,
+                    ..Default::default()
                 }),
                 Some(0),
             )
@@ -1051,6 +1052,7 @@ async fn a_completion_reports_its_own_cancel_reason() {
                 structured_output: None,
                 usage: None,
                 tool_overrides: None,
+                ..Default::default()
             })
         };
 

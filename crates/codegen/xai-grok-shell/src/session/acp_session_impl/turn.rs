@@ -1729,6 +1729,8 @@ impl SessionActor {
                     structured_output,
                     usage,
                     tool_overrides: None,
+                    turn_input_tokens: turn_sampling.input_tokens,
+                    turn_cached_read_tokens: turn_sampling.cache_read_tokens,
                 })
             }
             Err(e) => Err(crate::sampling::error::attach_prompt_usage(e, usage)),
@@ -2483,6 +2485,10 @@ impl SessionActor {
         self.emit_turn_end_plan_cleanup().await;
         self.signals_handle().record_turn_complete();
         turn_sampling.fold(round);
+        // Every model call contributes to the turn's cache-hit rate; push the
+        // running sums so streamed notifications carry a live percentage.
+        self.chat_state_handle
+            .record_turn_cache_totals(turn_sampling.input_tokens, turn_sampling.cache_read_tokens);
         if let Some(request) = self
             .feedback_manager
             .maybe_request_feedback(Some(req_id.to_string()))

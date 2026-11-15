@@ -20,6 +20,7 @@ fn prompt_turn_ok(
         structured_output,
         usage: None,
         tool_overrides: None,
+        ..Default::default()
     }
 }
 

@@ -281,9 +281,17 @@ impl SessionActor {
         }
         let total_tokens = self.chat_state_handle.get_estimated_total_tokens().await;
         let meta_info = self.chat_state_handle.get_notification_meta().await;
-        let (stream_start_ms, turn_start_ms) = meta_info
-            .map(|m| (m.stream_start_ms, m.turn_start_ms))
-            .unwrap_or((None, None));
+        let (stream_start_ms, turn_start_ms, turn_input_tokens, turn_cached_read_tokens) =
+            meta_info
+                .map(|m| {
+                    (
+                        m.stream_start_ms,
+                        m.turn_start_ms,
+                        m.turn_input_tokens,
+                        m.turn_cached_read_tokens,
+                    )
+                })
+                .unwrap_or((None, None, 0, 0));
         let event_id = self.generate_event_id();
         let agent_timestamp_ms =
             agent_timestamp_ms_override.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
@@ -304,6 +312,13 @@ impl SessionActor {
         }
         if let Some(ms) = turn_start_ms {
             obj.insert("turnStartMs".to_string(), ms.into());
+        }
+        if turn_input_tokens > 0 {
+            obj.insert("turnInputTokens".to_string(), turn_input_tokens.into());
+            obj.insert(
+                "turnCachedReadTokens".to_string(),
+                turn_cached_read_tokens.into(),
+            );
         }
         if let Some(update_type) = update_type {
             obj.insert("updateType".to_string(), update_type.into());

@@ -235,6 +235,15 @@ impl ChatStateActor {
             }
             ChatStateCommand::RecordTurnStart { timestamp_ms } => {
                 self.state.turn_start_ms = Some(timestamp_ms);
+                self.state.turn_input_tokens = 0;
+                self.state.turn_cached_read_tokens = 0;
+            }
+            ChatStateCommand::RecordTurnCacheTotals {
+                input_tokens,
+                cached_read_tokens,
+            } => {
+                self.state.turn_input_tokens = input_tokens;
+                self.state.turn_cached_read_tokens = cached_read_tokens;
             }
             ChatStateCommand::ReplaceConversation {
                 items,

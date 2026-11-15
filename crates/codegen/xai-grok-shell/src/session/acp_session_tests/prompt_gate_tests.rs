@@ -457,6 +457,7 @@ async fn hook_denied_completion_holds_queue_until_release() {
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     None,
                 )
@@ -557,6 +558,7 @@ async fn hook_denied_completion_does_not_rearm_cleared_hold() {
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     None,
                 )
@@ -616,6 +618,7 @@ async fn non_hook_cancel_does_not_hold_queue() {
                         structured_output: None,
                         usage: None,
                         tool_overrides: None,
+                        ..Default::default()
                     }),
                     None,
                 )

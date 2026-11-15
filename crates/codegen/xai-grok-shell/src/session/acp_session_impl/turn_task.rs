@@ -500,6 +500,7 @@ async fn run_task(
             structured_output: None,
             usage: None,
             tool_overrides: None,
+            ..Default::default()
         })
     } else {
         session.handle_turn_input(request).await

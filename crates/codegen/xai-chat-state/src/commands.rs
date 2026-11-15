@@ -145,6 +145,13 @@ pub enum ChatStateCommand {
     /// Record turn timing metadata.
     RecordTurnStart { timestamp_ms: i64 },
 
+    /// Record this turn's cumulative prompt/cache token sums so every streamed
+    /// notification can carry a live cache-hit rate.
+    RecordTurnCacheTotals {
+        input_tokens: u64,
+        cached_read_tokens: u64,
+    },
+
     /// Replace conversation history.
     ReplaceConversation {
         items: Vec<ConversationItem>,

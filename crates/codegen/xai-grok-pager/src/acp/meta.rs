@@ -21,6 +21,13 @@ pub struct NotificationMeta {
     /// UTC ms when the current turn started (`turnStartMs`).
     /// Constant for the entire turn.
     pub turn_start_ms: Option<i64>,
+    /// Prompt tokens summed over this turn's model calls so far (`turnInputTokens`).
+    #[serde(default)]
+    pub turn_input_tokens: Option<u64>,
+    /// Cached prompt tokens summed over this turn's model calls so far
+    /// (`turnCachedReadTokens`).
+    #[serde(default)]
+    pub turn_cached_read_tokens: Option<u64>,
     /// Stable id for the prompt this notification belongs to (`promptId`).
     /// The client passes a UUID in `PromptRequest._meta.promptId`; the agent echoes it on every notification it emits while processing that prompt.
     /// Used to drop chunks for cancelled / rewound turns.
@@ -116,6 +123,8 @@ impl NotificationMeta {
             agent_timestamp_ms: m.get("agentTimestampMs").and_then(|v| v.as_i64()),
             stream_start_ms: m.get("streamStartMs").and_then(|v| v.as_i64()),
             turn_start_ms: m.get("turnStartMs").and_then(|v| v.as_i64()),
+            turn_input_tokens: m.get("turnInputTokens").and_then(|v| v.as_u64()),
+            turn_cached_read_tokens: m.get("turnCachedReadTokens").and_then(|v| v.as_u64()),
             prompt_id: m
                 .get("promptId")
                 .and_then(|v| v.as_str())
@@ -139,6 +148,8 @@ mod tests {
             "agentTimestampMs": 1700000000000i64,
             "streamStartMs": 1700000000000i64 - 3200,
             "turnStartMs": 1700000000000i64 - 5000,
+            "turnInputTokens": 42_000u64,
+            "turnCachedReadTokens": 39_000u64,
             "eventId": "sess-1-7",
         });
         let map = meta_json.as_object().unwrap();
@@ -148,6 +159,8 @@ mod tests {
         assert_eq!(meta.agent_timestamp_ms, Some(1700000000000));
         assert_eq!(meta.stream_start_ms, Some(1700000000000 - 3200));
         assert_eq!(meta.turn_start_ms, Some(1700000000000 - 5000));
+        assert_eq!(meta.turn_input_tokens, Some(42_000));
+        assert_eq!(meta.turn_cached_read_tokens, Some(39_000));
         assert!(!meta.is_replay);
         assert_eq!(meta.event_id.as_deref(), Some("sess-1-7"));
         assert_eq!(meta.event_seq, Some(7));

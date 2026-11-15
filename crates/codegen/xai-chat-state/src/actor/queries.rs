@@ -11,6 +11,8 @@ impl ChatStateActor {
         NotificationMeta {
             stream_start_ms: self.state.stream_start_ms,
             turn_start_ms: self.state.turn_start_ms,
+            turn_input_tokens: self.state.turn_input_tokens,
+            turn_cached_read_tokens: self.state.turn_cached_read_tokens,
         }
     }
 

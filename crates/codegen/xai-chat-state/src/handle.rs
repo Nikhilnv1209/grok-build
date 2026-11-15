@@ -253,6 +253,14 @@ impl ChatStateHandle {
             .send(ChatStateCommand::RecordTurnStart { timestamp_ms });
     }
 
+    /// Record this turn's cumulative prompt/cache token sums for notification meta.
+    pub fn record_turn_cache_totals(&self, input_tokens: u64, cached_read_tokens: u64) {
+        let _ = self.cmd_tx.send(ChatStateCommand::RecordTurnCacheTotals {
+            input_tokens,
+            cached_read_tokens,
+        });
+    }
+
     /// Replace conversation history.
     pub fn replace_conversation(&self, items: Vec<ConversationItem>) {
         self.send_replace(items, false);

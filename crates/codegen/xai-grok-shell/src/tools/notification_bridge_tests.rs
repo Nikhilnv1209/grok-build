@@ -481,6 +481,7 @@ async fn timed_out_monitor_admission_queues_one_fallback_and_late_actor_drops_pr
         structured_output: None,
         usage: None,
         tool_overrides: None,
+        ..Default::default()
     }));
 
     assert!(matches!(

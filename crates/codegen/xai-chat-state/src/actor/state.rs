@@ -140,6 +140,10 @@ pub(crate) struct ChatState {
     pub stream_start_ms: Option<i64>,
     /// Timestamp when the current turn started (epoch ms).
     pub turn_start_ms: Option<i64>,
+    /// Prompt tokens summed over this turn's model calls so far (notification meta).
+    pub turn_input_tokens: u64,
+    /// Cached prompt tokens summed over this turn's model calls so far (notification meta).
+    pub turn_cached_read_tokens: u64,
     /// File paths the agent has edited.
     pub agent_edited_paths: BTreeSet<String>,
     /// Prompt index at which the last compaction occurred.
@@ -222,6 +226,8 @@ impl ChatState {
             total_tokens: initial_tokens,
             stream_start_ms: None,
             turn_start_ms: None,
+            turn_input_tokens: 0,
+            turn_cached_read_tokens: 0,
             agent_edited_paths: BTreeSet::new(),
             last_compaction_prompt_index: None,
             credentials: Credentials::default(),

@@ -6173,7 +6173,8 @@ fn prompt_routes_only_non_send_now_through_human_delivery_handle() {
                                         structured_output: None,
                                         usage: None,
                                         tool_overrides: None,
-                                    }),
+                                                                            ..Default::default()
+}),
                                 );
                         }
                         _ => {}

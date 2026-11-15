@@ -238,6 +238,7 @@ impl SessionActor {
             structured_output: None,
             usage: None,
             tool_overrides: self.effective_tool_overrides(),
+            ..Default::default()
         }));
         // The rewind cleared the barrier when it claimed/popped; wakes flow.
         CancelOutcome {
@@ -384,6 +385,7 @@ impl SessionActor {
                 structured_output: None,
                 usage: None,
                 tool_overrides: self.effective_tool_overrides(),
+                ..Default::default()
             });
             Self::settle_parent_message_completions(message_completions, &result);
             return self
@@ -902,6 +904,7 @@ impl SessionActor {
                 structured_output: None,
                 usage: None,
                 tool_overrides: self.effective_tool_overrides(),
+                ..Default::default()
             });
             Self::settle_parent_message_completions(message_completions, &result);
             return self
@@ -917,6 +920,7 @@ impl SessionActor {
             structured_output: None,
             usage: cancelled_usage.clone(),
             tool_overrides: self.effective_tool_overrides(),
+            ..Default::default()
         });
         Self::settle_parent_message_completions(message_completions, &message_result);
         for (idx, input) in pending_inputs.into_iter().enumerate() {
@@ -959,6 +963,7 @@ impl SessionActor {
                     } else {
                         None
                     },
+                    ..Default::default()
                 }))
                 .ok();
         }
