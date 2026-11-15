@@ -211,7 +211,7 @@ fn drive_inline_submit_to_execute(app: &mut AppView) -> Vec<Effect> {
     app.agents.get_mut(&id).unwrap().session.session_id =
         Some(acp::SessionId::new("sess".to_string()));
 
-    let effects = dispatch(Action::RewindCancelOffer, &mut app);
+    let effects = dispatch(Action::RewindCancelOffer, app);
 
     assert!(
         matches!(
