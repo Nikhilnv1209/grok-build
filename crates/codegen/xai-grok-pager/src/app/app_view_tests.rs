@@ -4881,18 +4881,21 @@ fn welcome_no_credentials_enter_opens_providers_dialog() {
     app.auth_state = AuthState::Done;
     app.has_any_credential = false;
     let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Action(Action::OpenProviders)));
+    assert!(matches!(
+        outcome,
+        InputOutcome::Action(Action::OpenProviders)
+    ));
 }
 #[test]
 fn welcome_no_credentials_ctrl_p_opens_providers_dialog() {
     let mut app = test_app();
     app.auth_state = AuthState::Done;
     app.has_any_credential = false;
-    let outcome = app.handle_input(&key_event(
-        KeyCode::Char('p'),
-        KeyModifiers::CONTROL,
+    let outcome = app.handle_input(&key_event(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    assert!(matches!(
+        outcome,
+        InputOutcome::Action(Action::OpenProviders)
     ));
-    assert!(matches!(outcome, InputOutcome::Action(Action::OpenProviders)));
 }
 #[test]
 fn welcome_with_credentials_keeps_type_to_open() {
@@ -4906,6 +4909,8 @@ fn welcome_with_credentials_keeps_type_to_open() {
         outcome,
         InputOutcome::ActionThenForward(Action::NewSession)
     ));
+}
+#[test]
 fn welcome_done_ctrl_p_leaves_home() {
     for focused in [true, false] {
         let mut app = test_app();

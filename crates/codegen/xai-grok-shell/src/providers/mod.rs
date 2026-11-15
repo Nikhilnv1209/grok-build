@@ -19,9 +19,7 @@ use crate::sampling::ApiBackend;
 use xai_grok_sampler::AuthScheme;
 use xai_grok_sampling_types::ReasoningEffort;
 
-pub use catalog::{
-    base_url, builtin_providers, commandcode_models, snapshot_models, ProviderSpec,
-};
+pub use catalog::{ProviderSpec, base_url, builtin_providers, commandcode_models, snapshot_models};
 
 const PROVIDER_SCOPE_PREFIX: &str = "provider:";
 
@@ -68,9 +66,7 @@ pub fn provider_scope(id: &str) -> String {
 
 pub fn find_provider(input: &str) -> Option<&'static ProviderSpec> {
     let needle = input.trim();
-    builtin_providers()
-        .iter()
-        .find(|spec| spec.matches(needle))
+    builtin_providers().iter().find(|spec| spec.matches(needle))
 }
 
 /// Friendly picker label for an auth scope: `provider:deepseek` → `"DeepSeek"`.
@@ -212,9 +208,10 @@ fn is_deepseek_class(model: &ModelEntry) -> bool {
         return true;
     }
     if let Some(ref env) = model.env_key {
-        return env.names().iter().any(|name| {
-            env_belongs_to_provider(name).is_some_and(|spec| spec.id == "deepseek")
-        });
+        return env
+            .names()
+            .iter()
+            .any(|name| env_belongs_to_provider(name).is_some_and(|spec| spec.id == "deepseek"));
     }
     false
 }
@@ -223,9 +220,7 @@ fn is_deepseek_class(model: &ModelEntry) -> bool {
 /// `Some(thinking)` marks a DeepSeek-style reasoning model so the mapper emits
 /// the `thinking` envelope and normalizes assistant `reasoning_content`.
 /// `None` keeps the plain OpenAI behavior.
-pub fn model_thinking(
-    model: &ModelEntry,
-) -> Option<xai_grok_sampling_types::ChatThinking> {
+pub fn model_thinking(model: &ModelEntry) -> Option<xai_grok_sampling_types::ChatThinking> {
     use xai_grok_sampling_types::{ChatThinking, ChatThinkingType};
     let info = model.info();
     if info.api_backend != ApiBackend::ChatCompletions
@@ -332,13 +327,17 @@ mod tests {
     /// the wire model id, the chat-completions backend, a reasoning effort,
     /// and the provider env key.
     fn reasoning_entry(model: &str, provider: &str, env_keys: &[&str]) -> ModelEntry {
+        let mut info = crate::agent::config::ModelInfo::fallback(model);
+        info.api_backend = ApiBackend::ChatCompletions;
+        info.reasoning_effort = Some(ReasoningEffort::High);
         ModelEntry {
-            model: model.to_string(),
-            api_backend: ApiBackend::ChatCompletions,
-            reasoning_effort: Some(ReasoningEffort::High),
-            auth_provider: Some(AuthProviderRef::fail_closed(provider_scope(provider))),
+            info,
+            mtls_cert_dir: None,
+            api_key: None,
             env_key: Some(EnvKeys::new(env_keys.iter().copied())),
-            ..Default::default()
+            auth_provider: Some(AuthProviderRef::fail_closed(provider_scope(provider))),
+            api_base_url: None,
+            custom_config_model: false,
         }
     }
 }

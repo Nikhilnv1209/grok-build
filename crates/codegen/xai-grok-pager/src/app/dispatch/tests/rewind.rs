@@ -231,6 +231,30 @@ fn drive_inline_submit_to_execute(app: &mut AppView) -> Vec<Effect> {
     dispatch(Action::RewindConversationOnlyConfirm(0), app)
 }
 
+/// Agent view with one prompt + one answer, its first prompt open in the
+/// inline editor seeded with `edited`, and a separate composer draft.
+fn app_mid_inline_edit(edited: &str) -> AppView {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent
+        .scrollback
+        .push_block(RenderBlock::user_prompt("fix the bug"));
+    agent
+        .scrollback
+        .push_block(RenderBlock::agent_message("done"));
+    agent.scrollback.prepare_layout(80, 40);
+    assert!(agent.enter_inline_edit(0));
+    agent
+        .inline_edit
+        .as_mut()
+        .unwrap()
+        .textarea
+        .set_text(edited);
+    agent.prompt.set_text("composer draft");
+    app
+}
+
 /// Submitting an inline edit enters the exact same flow as `/rewind`: a Loading overlay and a points fetch pre-targeted at the edited prompt.
 /// The editor stays open behind the flow and nothing is stashed yet.
 #[test]

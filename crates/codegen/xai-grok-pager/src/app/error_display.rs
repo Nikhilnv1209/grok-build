@@ -678,7 +678,7 @@ mod tests {
         assert_eq!(sanitized.chars().count(), long.chars().count());
 
         let raw_only = format!("API error (status 503): {}", "y".repeat(300));
-        let formatted = format_request_failure(None, Some("api"), &raw_only);
+        let formatted = format_request_failure(None, Some(WireErrorType::Api), &raw_only);
         assert!(
             formatted.detail.contains('y'),
             "detail must keep the server text: {}",

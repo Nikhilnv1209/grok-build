@@ -2777,7 +2777,13 @@ fn acp_model_meta_stamps_provider_or_custom_label() {
 
     // Connected provider row: auth_provider scope `provider:deepseek` -> "DeepSeek".
     let mut models = IndexMap::new();
-    let entry = test_model_entry("opencode-deepseek-v4", "https://api.deepseek.com", None, None, None);
+    let entry = test_model_entry(
+        "opencode-deepseek-v4",
+        "https://api.deepseek.com",
+        None,
+        None,
+        None,
+    );
     let provider = crate::providers::builtin_providers()
         .iter()
         .find(|s| s.id == "deepseek")
@@ -2792,7 +2798,13 @@ fn acp_model_meta_stamps_provider_or_custom_label() {
     models.insert("my-custom".to_string(), custom);
 
     // Built-in row: no tag at all.
-    let builtin = test_model_entry("grok-4.5", "https://cli-chat-proxy.grok.com/v1", None, None, None);
+    let builtin = test_model_entry(
+        "grok-4.5",
+        "https://cli-chat-proxy.grok.com/v1",
+        None,
+        None,
+        None,
+    );
     models.insert("grok-4.5".to_string(), builtin);
 
     let acp_models = to_acp_model_info(&models);

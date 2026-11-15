@@ -43,12 +43,7 @@ pub struct ProviderSpec {
 }
 
 pub fn builtin_providers() -> &'static [ProviderSpec] {
-    &[
-        UMANS,
-        DEEPSEEK,
-        OPENCODE,
-        COMMAND_CODE,
-    ]
+    &[UMANS, DEEPSEEK, OPENCODE, COMMAND_CODE]
 }
 
 const UMANS: ProviderSpec = ProviderSpec {
@@ -225,7 +220,11 @@ fn snapshot_models_in(snapshot: &ModelsDevSnapshot, spec: &ProviderSpec) -> Vec<
                 model: model_id,
                 name: model.name.clone(),
                 description: model.description.clone().unwrap_or_default(),
-                context_window: model.limit.as_ref().and_then(|l| l.context).unwrap_or(200_000),
+                context_window: model
+                    .limit
+                    .as_ref()
+                    .and_then(|l| l.context)
+                    .unwrap_or(200_000),
                 max_output_tokens: model
                     .limit
                     .as_ref()
@@ -314,9 +313,7 @@ const COMMAND_CODE_FALLBACK: &[(&str, &str, u64)] = &[
 
 fn commandcode_backend(model_id: &str) -> ApiBackend {
     // Claude models on Command Code 400 on the chat-completions route.
-    if model_id.starts_with("claude-")
-        || model_id.starts_with("anthropic/")
-    {
+    if model_id.starts_with("claude-") || model_id.starts_with("anthropic/") {
         ApiBackend::Messages
     } else {
         ApiBackend::ChatCompletions
@@ -364,7 +361,10 @@ mod tests {
     #[test]
     fn snapshot_parses_with_providers() {
         let snap = checked_in_snapshot();
-        assert!(snap.umans_plan_model_count() >= 5, "umans-ai-coding-plan models");
+        assert!(
+            snap.umans_plan_model_count() >= 5,
+            "umans-ai-coding-plan models"
+        );
         assert!(snap.providers.contains_key("deepseek"));
         assert!(snap.providers.contains_key("opencode"));
     }
@@ -432,7 +432,10 @@ mod tests {
 
     #[test]
     fn umans_merges_plan_and_org_entries() {
-        let umans = builtin_providers().iter().find(|s| s.id == "umans").unwrap();
+        let umans = builtin_providers()
+            .iter()
+            .find(|s| s.id == "umans")
+            .unwrap();
         let models = snapshot_models(umans);
         let wire_ids: std::collections::HashSet<&str> =
             models.iter().map(|m| m.model.as_str()).collect();
@@ -454,7 +457,9 @@ mod tests {
         let models = commandcode_models();
         assert!(!models.is_empty());
         assert!(
-            models.iter().all(|m| m.api_backend == ApiBackend::ChatCompletions),
+            models
+                .iter()
+                .all(|m| m.api_backend == ApiBackend::ChatCompletions),
             "checked-in catalog only carries OpenAI-compatible open models"
         );
         assert!(models.iter().any(|m| m.model.contains("Kimi")));
@@ -462,16 +467,16 @@ mod tests {
 
     #[test]
     fn reasoning_effort_roundtrip_strings() {
-        for e in [
-            ReasoningEffort::None,
-            ReasoningEffort::Minimal,
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
-            ReasoningEffort::High,
-            ReasoningEffort::Xhigh,
-            ReasoningEffort::Max,
+        for (effort, wire) in [
+            (ReasoningEffort::None, "none"),
+            (ReasoningEffort::Minimal, "minimal"),
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::Xhigh, "xhigh"),
+            (ReasoningEffort::Max, "max"),
         ] {
-            assert_eq!(e.as_str(), effort_as_str(&e));
+            assert_eq!(effort_as_str(&effort), wire);
         }
     }
 
@@ -480,25 +485,39 @@ mod tests {
     /// low/high and dropping `max`.
     #[test]
     fn effort_values_survive_deserialization() {
-        let deepseek = builtin_providers().iter().find(|s| s.id == "deepseek").unwrap();
+        let deepseek = builtin_providers()
+            .iter()
+            .find(|s| s.id == "deepseek")
+            .unwrap();
         let flash = snapshot_models(deepseek)
             .into_iter()
             .find(|m| m.model == "deepseek-v4-flash")
             .expect("deepseek-v4-flash must load from the snapshot");
         assert_eq!(
             flash.reasoning_efforts,
-            vec![ReasoningEffort::Low, ReasoningEffort::High, ReasoningEffort::Max],
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::High,
+                ReasoningEffort::Max
+            ],
             "models.dev declares low/high/max for deepseek-v4-flash"
         );
 
-        let opencode = builtin_providers().iter().find(|s| s.id == "opencode").unwrap();
+        let opencode = builtin_providers()
+            .iter()
+            .find(|s| s.id == "opencode")
+            .unwrap();
         let free = snapshot_models(opencode)
             .into_iter()
             .find(|m| m.model == "deepseek-v4-flash-free")
             .expect("opencode deepseek-v4-flash-free must load from the snapshot");
         assert_eq!(
             free.reasoning_efforts,
-            vec![ReasoningEffort::Low, ReasoningEffort::High, ReasoningEffort::Max],
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::High,
+                ReasoningEffort::Max
+            ],
             "opencode deepseek-v4-flash-free must keep its max-effort option"
         );
         let pro = snapshot_models(opencode)
@@ -507,7 +526,11 @@ mod tests {
             .expect("opencode deepseek-v4-pro must load from the snapshot");
         assert_eq!(
             pro.reasoning_efforts,
-            vec![ReasoningEffort::Low, ReasoningEffort::High, ReasoningEffort::Max],
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::High,
+                ReasoningEffort::Max
+            ],
             "toggle + effort merge must dedup to low/high/max"
         );
     }

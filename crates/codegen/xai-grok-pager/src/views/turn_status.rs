@@ -735,6 +735,7 @@ mod tests {
             attempt: 2,
             max_retries: 5,
             reason: "connection reset by peer".to_owned(),
+            error_type: None,
         };
         let (style, label, _) =
             compute_activity(&theme, &AgentState::TurnRunning, &Some(activity), false, false);
@@ -747,6 +748,7 @@ mod tests {
             attempt: 1,
             max_retries: 3,
             reason: long.clone(),
+            error_type: None,
         };
         let (_, label, _) =
             compute_activity(&theme, &AgentState::TurnRunning, &Some(activity), false, false);
